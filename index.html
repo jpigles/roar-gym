@@ -56,6 +56,10 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .btn-ghost{background:transparent} .btn-danger{color:var(--danger)}
 .btn-wide{width:100%}
 .chip{min-height:36px;padding:4px 12px;border-radius:99px;font-size:.85rem}
+.ss-ex{border-top:1px solid var(--line);padding-top:12px;gap:6px}
+.round{border-top:1px solid var(--line);padding-top:12px;gap:8px}
+.ss .set .i{font-weight:700;font-size:.8rem}
+.pin{font-size:1.4rem;letter-spacing:.3em;text-align:center}
 .who-row{display:flex;flex-wrap:wrap;gap:8px}
 .who{min-height:44px;padding:8px 16px;border-radius:99px}
 .who[aria-pressed="true"]{background:var(--court);border-color:transparent;color:#fff}
@@ -868,7 +872,7 @@ async function readPdfFile(file){
 
 /* ============ State ============ */
 /* installed-app mode: the same page served from its own web address, outside Claude. Everything stays on the device. */
-const OWN_APP=!(window.claude&&window.claude.use), APP_VERSION='2026.11.14.1926';
+const OWN_APP=!(window.claude&&window.claude.use), APP_VERSION='2026.11.14.1945';
 /* ---- team roster (Roar Men's Team 2, 2026/27): pick your name, each person's log is kept separately on the device ---- */
 const POS={setter:'Setters',opposite:'Opposites',middle:'Middle blocker',outside:'Outside hitters',libero:'Liberos'};
 const ROSTER=[
@@ -977,6 +981,46 @@ async function pull(){
   }catch(e){setSync('local')}
 }
 if(window.claude&&window.claude.use){ window.claude.use('db').then(d=>{ if(d){db=d;pull();flush();} }).catch(()=>{}); }
+/* ---- team database (installed-app mode): each person's log is saved online behind their own PIN.
+   The key below is the project's publishable key: public by design. On its own it can read nothing; it can only call
+   the PIN- and token-checked functions defined in tools/supabase-setup.sql. The PIN itself is never stored on the device. ---- */
+const SB={url:'https://snmcjzplhxanvyfhgflj.supabase.co',key:'sb_publishable_jz66rvvt51sa3s_rSocdfg_iS1zuNm8'};
+const OWNER=BEACH_ONLY[0], tokKey=id=>'roarGymLog.tok.'+id, tokOf=id=>{try{return localStorage.getItem(tokKey(id))}catch(e){return null}};
+let TOKEN=OWN_APP&&WHO&&WHO!=='guest'?tokOf(WHO):null;
+const needPin=()=>OWN_APP&&!!WHO&&WHO!=='guest'&&!TOKEN;
+async function rpc(fn,args){
+  const ctl=new AbortController(), t=setTimeout(()=>ctl.abort(),12000);
+  try{const r=await fetch(SB.url+'/rest/v1/rpc/'+fn,{method:'POST',headers:{'Content-Type':'application/json',apikey:SB.key},body:JSON.stringify(args||{}),signal:ctl.signal});
+    if(!r.ok) throw new Error('http '+r.status); return await r.json()}
+  finally{clearTimeout(t)}
+}
+/* the same small doc/collection interface the Claude-hosted version uses, so the sync code above works unchanged */
+function remoteDb(token){
+  const chk=o=>{ if(o&&o.ok) return o; if(o&&o.err==='auth'){authLost();throw new Error('auth')} if(o&&(o.err==='bad_doc'||o.err==='too_many')) return null; throw new Error((o&&o.err)||'rpc') };
+  return {
+    doc:path=>({
+      get:async()=>{const o=chk(await rpc('doc_get',{p_token:token,p_path:path}))||{}; return {exists:!!o.exists,data:()=>o.data}},
+      set:async d=>{chk(await rpc('doc_set',{p_token:token,p_path:path,p_data:d}))},
+      delete:async()=>{chk(await rpc('doc_del',{p_token:token,p_path:path}))}}),
+    collection:name=>{const g={limit:()=>g,get:async()=>{const o=chk(await rpc('col_list',{p_token:token,p_col:name}))||{}; return {docs:(o.docs||[]).map(x=>({id:x.id,data:()=>x.data}))}}}; return g}
+  };
+}
+function authLost(){ try{localStorage.removeItem(tokKey(WHO))}catch(e){} TOKEN=null; db=null; ui.pin={id:WHO,err:'Your PIN was changed or reset. Enter it again.'}; render(); loadTeam() }
+async function loadTeam(){ try{ui.team=await rpc('team_status');ui.teamErr=false}catch(e){ui.team=null;ui.teamErr=true} if(ui.pin) render(); else softRender() }
+const PINERR=o=>{const e=o&&o.err; return e==='bad_pin'?'Wrong PIN. '+(o.left>0?o.left+(o.left===1?' try':' tries')+' left before a 10-minute lock.':'This name is now locked for 10 minutes.')
+  :e==='locked'?'Too many wrong tries. Try again in '+Math.max(1,Math.ceil((o.wait||60)/60))+' min.'
+  :e==='bad_code'?'That team code is not right.':e==='code_locked'?'Too many wrong team codes. Try again in 10 minutes.'
+  :e==='no_code_yet'?'The team is not open yet. The team code has to be set first.':e==='pin_format'?'Use 4 to 8 digits.':'Something went wrong. Try again.'};
+function switchTo(id){
+  try{ const k=BASEKEY+'.'+id;
+    /* a log made on this device before names existed goes to the first person who picks a name */
+    if(!WHO&&!localStorage.getItem(BASEKEY+'.claimed')){const old=localStorage.getItem(BASEKEY); if(old&&!localStorage.getItem(k)) localStorage.setItem(k,old); localStorage.setItem(BASEKEY+'.claimed','1')}
+    localStorage.setItem(WHOKEY,id);
+  }catch(e){toast('This browser is blocking storage, so it cannot remember who you are.');return}
+  location.reload();
+}
+if(TOKEN){db=remoteDb(TOKEN);pull();flush()}
+if(needPin()){ui.pin={id:WHO,err:''};loadTeam()}
 /* ---- installed-app mode: the same page served from its own web address, outside Claude. Everything stays on the device. ---- */
 const installed=()=>{try{return !!(navigator.standalone||matchMedia('(display-mode: standalone)').matches)}catch(e){return false}};
 let installEvt=null; window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installEvt=e; if(ui.view!=='session') softRender()});
@@ -1113,9 +1157,9 @@ function viewSession(){
       h+=`<li><input type="checkbox" id="warm-${i}" data-warm-i="${i}" ${cur.warm[i]?'checked':''} aria-label="${esc(w.name)} done"><div class="stack grow" style="gap:6px"><div><b>${esc(w.name)}</b> <span class="target">${esc(w.vol)}</span></div><div class="small muted">${esc(w.cue)}</div><button class="linkbtn small" style="align-self:flex-start" data-act="demo" data-id="${id}">${ui.demo===id?'Hide demo':'Show me how'}</button>${ui.demo===id?demoBlock(id,w):''}</div></li>`;});
     h+=`</ul></details>`;
   }
-  day.items.forEach((it,idx)=>{
-    const key=exKey(it.name), id='x'+idx, n=setsFor(it,wk), rows=cur.sets[key]||[], last=lastLog(key);
-    const pair=paired(it.code)&&day.items.find(o=>o!==it&&o.code[0]===it.code[0]);
+  /* one entry per exercise: everything needed to draw it, alone or inside a superset */
+  const info=day.items.map((it,idx)=>{
+    const key=exKey(it.name), id='x'+idx, n=setsFor(it,wk), rows=cur.sets[key]||[], last=lastLog(key), nw=it.load===false;
     let badges='';
     if(wk.eccentric&&it.main) badges+='<span class="pill warn">3-sec lowering</span> ';
     if(wk.dropSets) badges+=`<span class="pill">Deload: ${n} sets, fast</span> `;
@@ -1126,18 +1170,35 @@ function viewSession(){
       if(tw) hint+=(hint?' · ':'')+`Target ≈ ${Math.round(tw*(1+wk.loadPct/100)*2)/2} ${S.settings.unit} (+${wk.loadPct}%)`;
       else badges+=`<span class="pill warn">+${wk.loadPct}% vs week 1</span> `;
     }
-    h+=`<section class="card ex" id="ex-${idx}"><div class="ex-head"><span class="code">${esc(it.code)}</span><div class="grow"><h3>${esc(it.name)}</h3><div class="target">${n} × ${esc(it.reps)} <span class="muted">· rest ${it.rest}s</span></div></div></div>
-     ${badges?`<div>${badges}</div>`:''}<p class="small">${esc(it.focus||'')}${pair?` <span class="muted">Pair with ${esc(pair.code)}: alternate sets.</span>`:''}</p>
-     <button class="linkbtn small" style="align-self:flex-start" data-act="demo" data-id="${id}">${ui.demo===id?'Hide demo':'Show me how'}</button>${ui.demo===id?demoBlock(id,it):''}
-     ${hint?`<p class="small muted">${esc(hint)}</p>`:''}${it.hold?`<button class="chip" style="align-self:flex-start" data-act="hold" data-s="${+it.hold}">Start ${+it.hold} s hold timer</button>`:''}<div class="sets">`;
-    const nw=it.load===false;
-    h+=`<div class="set ${nw?'nw':''}"><span></span>${nw?'':`<span class="set-h">${esc(S.settings.unit)}</span>`}<span class="set-h">${esc(it.u||'reps')}</span><span></span></div>`;
-    for(let i=0;i<n;i++){const r=rows[i]||{}, lp=last&&(last.sets[i]||last.sets[last.sets.length-1]), isNext=c.next&&c.next.x===idx&&c.next.i===i;
-      h+=`<div class="set ${nw?'nw':''} ${r.done?'done':''} ${isNext?'next':''}"><span class="i">${i+1}</span>`+
-       (nw?'':`<input id="w-${idx}-${i}" inputmode="decimal" aria-label="Set ${i+1} weight" data-k="${esc(key)}" data-i="${i}" data-f="w" value="${r.w!=null?esc(r.w):''}" placeholder="${lp&&lp.w!=null&&lp.w!==''?esc(wOf(lp.w,last.s)):'–'}">`)+
-       `<input id="r-${idx}-${i}" inputmode="numeric" aria-label="Set ${i+1} reps" data-k="${esc(key)}" data-i="${i}" data-f="r" value="${r.r!=null?esc(r.r):''}" placeholder="${esc(parseInt(it.reps)||'')}">
-       <button data-act="set" data-x="${idx}" data-i="${i}" aria-pressed="${!!r.done}">${r.done?'✓ Done':'Done'}</button></div>`;}
-    h+=`</div></section>`;
+    const demo=`<button class="linkbtn small" style="align-self:flex-start" data-act="demo" data-id="${id}">${ui.demo===id?'Hide demo':'Show me how'}</button>${ui.demo===id?demoBlock(id,it):''}`;
+    const hold=it.hold?`<button class="chip" style="align-self:flex-start" data-act="hold" data-s="${+it.hold}">Start ${+it.hold} s hold timer</button>`:'';
+    const what=it.u||'reps';
+    /* one set row; inside a superset the first cell shows the exercise code and the boxes say what goes in them */
+    const row=(i,label,ss)=>{const r=rows[i]||{}, lp=last&&(last.sets[i]||last.sets[last.sets.length-1]), isNext=c.next&&c.next.x===idx&&c.next.i===i, lw=lp&&lp.w!=null&&lp.w!==''?wOf(lp.w,last.s):null;
+      return `<div class="set ${nw?'nw':''} ${r.done?'done':''} ${isNext?'next':''}"><span class="i">${esc(label)}</span>`+
+       (nw?'':`<input id="w-${idx}-${i}" inputmode="decimal" aria-label="${esc(it.name)} set ${i+1} weight" data-k="${esc(key)}" data-i="${i}" data-f="w" value="${r.w!=null?esc(r.w):''}" placeholder="${lw!=null?esc(lw)+(ss?' '+esc(S.settings.unit):''):(ss?esc(S.settings.unit):'–')}">`)+
+       `<input id="r-${idx}-${i}" inputmode="numeric" aria-label="${esc(it.name)} set ${i+1} ${esc(what)}" data-k="${esc(key)}" data-i="${i}" data-f="r" value="${r.r!=null?esc(r.r):''}" placeholder="${esc((parseInt(it.reps)||'')+(ss?' '+what:''))}">
+       <button data-act="set" data-x="${idx}" data-i="${i}" aria-pressed="${!!r.done}">${r.done?'✓ Done':'Done'}</button></div>`};
+    return {it,idx,n,nw,badges,hint,demo,hold,what,row};
+  });
+  /* exercises that share a letter (B1 + B2, C1 + C2) are one superset: shown as one block, round by round */
+  const groups=[]; day.items.forEach((it,x)=>{const g=groups[groups.length-1]; if(g&&g.L===it.code[0]&&paired(it.code)) g.xs.push(x); else groups.push({L:it.code[0],xs:[x]})});
+  groups.forEach(g=>{
+    if(g.xs.length===1){const e=info[g.xs[0]], it=e.it;
+      h+=`<section class="card ex" id="ex-${e.idx}"><div class="ex-head"><span class="code">${esc(it.code)}</span><div class="grow"><h3>${esc(it.name)}</h3><div class="target">${e.n} × ${esc(it.reps)} <span class="muted">· rest ${it.rest}s</span></div></div></div>
+       ${e.badges?`<div>${e.badges}</div>`:''}<p class="small">${esc(it.focus||'')}</p>${e.demo}
+       ${e.hint?`<p class="small muted">${esc(e.hint)}</p>`:''}${e.hold}<div class="sets">
+       <div class="set ${e.nw?'nw':''}"><span></span>${e.nw?'':`<span class="set-h">${esc(S.settings.unit)}</span>`}<span class="set-h">${esc(e.what)}</span><span></span></div>`;
+      for(let i=0;i<e.n;i++) h+=e.row(i,i+1,false);
+      h+=`</div></section>`;
+    } else {
+      const es=g.xs.map(x=>info[x]), rounds=Math.max.apply(null,es.map(e=>e.n)), restS=Math.max.apply(null,es.map(e=>e.it.rest||60));
+      h+=`<section class="card ex ss"><div class="ex-head"><span class="code">${esc(g.L)}</span><div class="grow"><h3>Superset ${esc(g.L)}</h3><div class="target">${rounds} rounds <span class="muted">· ${es.map(e=>esc(e.it.code)).join(' then ')}, then rest ${restS}s</span></div></div></div>`;
+      es.forEach(e=>{h+=`<div class="ss-ex stack" id="ex-${e.idx}"><div><b>${esc(e.it.code)} · ${esc(e.it.name)}</b> <span class="target">${e.n} × ${esc(e.it.reps)}</span></div>
+        ${e.badges?`<div>${e.badges}</div>`:''}<p class="small">${esc(e.it.focus||'')}</p>${e.demo}${e.hint?`<p class="small muted">${esc(e.hint)}</p>`:''}${e.hold}</div>`});
+      for(let i=0;i<rounds;i++) h+=`<div class="round stack"><div class="eyebrow">Round ${i+1}</div><div class="sets">${es.filter(e=>i<e.n).map(e=>e.row(i,e.it.code,true)).join('')}</div></div>`;
+      h+=`</section>`;
+    }
   });
   h+=`<section class="stack"><label for="sess-note"><b>Notes</b> <span class="muted small">How it felt, any pain, what to change next time</span></label><textarea id="sess-note" class="note">${esc(cur.note||'')}</textarea></section>`;
   h+= ui.confirm==='finish-typed' ? `<div class="card hi stack" id="finish-ask"><p><b>${ui.typedN} set${ui.typedN===1?' has':'s have'} numbers but no tick.</b> Count ${ui.typedN===1?'it':'them'} as done?</p><div class="row"><button class="btn-primary grow" data-act="finish" data-v="count">Count and finish</button><button data-act="finish" data-v="skip">Leave out</button></div><button class="linkbtn small" data-act="cancel">Back to the workout</button></div>`
@@ -1241,25 +1302,50 @@ function viewPrograms(){
    <textarea id="import-text" placeholder='{ "id": "...", "name": "...", "team": "indoor", ... }' aria-label="Program JSON">${esc(ui.importText||'')}</textarea>
    ${ui.importErr?`<p class="small" style="color:var(--danger)">${esc(ui.importErr)}</p>`:''}
    <button class="btn-primary" data-act="import">Add program</button></div></details></section>`;
-  h+=`<section class="stack"><h2>Settings</h2>${ME?`<div class="row"><span class="grow">Logging as <b>${esc(ME.name)}</b></span><button data-act="who-open">Switch person</button></div>`:''}<div class="row"><span class="grow">Weight unit</span><div class="seg" style="min-width:130px"><button data-act="unit" data-v="kg" aria-pressed="${S.settings.unit==='kg'}">kg</button><button data-act="unit" data-v="lb" aria-pressed="${S.settings.unit==='lb'}">lb</button></div></div>
+  h+=`<section class="stack"><h2>Settings</h2>${ME?`<div class="row"><span class="grow">Logging as <b>${esc(ME.name)}</b></span><button data-act="who-open">Switch person</button></div>`:''}
+   ${TOKEN?`<details><summary>My PIN and this device</summary><div class="stack" style="padding-top:8px"><div class="row"><input class="field grow" id="pin-new" type="password" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="New PIN (4 to 8 digits)" aria-label="New PIN"><button data-act="pin-change">Change PIN</button></div>
+     <button data-act="sign-out">Sign out on this device</button><p class="small muted">Signing out asks for your PIN next time. Your log stays saved online.</p></div></details>`:''}
+   ${TOKEN&&WHO===OWNER?(()=>{const t=ui.team, others=t?t.claimed.filter(x=>x!==WHO):[];
+     return `<div class="card stack"><h3>Team access</h3><p class="small">${t?(t.code_set?'A team code is set. Teammates type it once, the first time they pick their name.':'<b>No team code yet.</b> Teammates cannot join until you set one.'):(ui.teamErr?'Cannot reach the team database right now.':'Checking…')}</p>
+      <div class="row"><input class="field grow" id="code-new" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${t&&t.code_set?'Change the team code':'Team code (6+ characters)'}" aria-label="Team code"><button data-act="code-save">Save</button></div>
+      <p class="small muted">Tell the team the code yourself, for example in the group chat. ${t?t.claimed.length+' of '+ROSTER.length+' have joined.':''}</p>
+      ${others.length?`<div class="row"><select id="reset-who" class="grow" aria-label="Teammate">${others.map(x=>`<option value="${esc(x)}">${esc((ROSTER.find(p=>p.id===x)||{name:x}).name)}</option>`).join('')}</select><button data-act="pin-reset">Reset PIN</button></div><p class="small muted">A reset lets that person choose a new PIN. Their log is kept.</p>`:''}</div>`})():''}
+   <div class="row"><span class="grow">Weight unit</span><div class="seg" style="min-width:130px"><button data-act="unit" data-v="kg" aria-pressed="${S.settings.unit==='kg'}">kg</button><button data-act="unit" data-v="lb" aria-pressed="${S.settings.unit==='lb'}">lb</button></div></div>
    <p class="small muted">Switching converts everything you have logged: lifts, targets, charts and body weight.</p>
-   <p class="small"><b>${ui.sync==='ok'?'Saved to your Claude account.':'Saved on this device.'}</b> <span class="muted">${ui.sync==='ok'?'Your log follows you between phone and laptop.':OWN_APP?'Your log and your programs stay on this device and are private to you. Nothing is uploaded. Copy a backup now and then, and before changing phones.':'Account sync is not available right now, so the log lives in this browser only. Keep a backup.'}</span></p>
+   <p class="small"><b>${ui.sync==='ok'?(OWN_APP?'Saved online.':'Saved to your Claude account.'):'Saved on this device.'}</b> <span class="muted">${ui.sync==='ok'?(OWN_APP?'Your log is backed up in the team database behind your PIN and opens on any phone.':'Your log follows you between phone and laptop.'):TOKEN?'Not synced yet. It will sync when you have signal.':OWN_APP?'Your log and your programs stay on this device and are private to you. Nothing is uploaded. Copy a backup now and then, and before changing phones.':'Account sync is not available right now, so the log lives in this browser only. Keep a backup.'}</span></p>
    ${OWN_APP&&!/^__/.test(APP_VERSION)?`<div class="row small"><span class="muted grow">Version ${esc(APP_VERSION)}</span><button class="chip" data-act="update">Check for update</button></div>`:''}
    <details ${ui.restoreText?'open':''}><summary>Backup and restore</summary><div class="stack" style="padding-top:8px"><button data-act="copy-backup">Copy my whole log</button><textarea id="restore-text" placeholder="Paste a backup here to restore it" aria-label="Backup to restore">${esc(ui.restoreText||'')}</textarea><button data-act="restore">Restore from pasted backup</button></div></details></section>`;
   return h;
 }
 function viewWho(){
   let h=`<header class="stack">${WHO?'<button class="linkbtn" data-act="who-close" style="align-self:flex-start">‹ Back</button>':''}<div class="eyebrow">Roar Men's Team 2 · 2026/27</div><h1>Who are you?</h1>
-   <p>Tap your name. Each person's workouts, weights and programs are kept separately on this device.</p></header>`;
+   <p>Tap your name. Your workouts, weights and programs are saved under it, behind a PIN only you know.</p></header>`;
   Object.keys(POS).forEach(k=>{h+=`<section class="stack"><h2>${esc(POS[k])}</h2><div class="who-row">${ROSTER.filter(p=>p.pos===k).map(p=>`<button class="who" data-act="who" data-id="${esc(p.id)}" aria-pressed="${p.id===WHO}">${esc(p.name)}</button>`).join('')}</div></section>`});
-  h+=`<section class="stack"><p class="small muted">Not on the list?</p><div class="who-row"><button class="who" data-act="who" data-id="guest" aria-pressed="${WHO==='guest'}">Continue as guest</button></div></section>`;
+  h+=`<section class="stack"><p class="small muted">Not on the list? A guest log stays on this device only.</p><div class="who-row"><button class="who" data-act="who" data-id="guest" aria-pressed="${WHO==='guest'}">Continue as guest</button></div></section>`;
   return h;
+}
+function viewPin(){
+  const st=ui.pin, id=st.id, p=ROSTER.find(x=>x.id===id)||{name:id}, t=ui.team, own=id===OWNER, on=(ROSTER.find(x=>x.id===OWNER)||{}).name||'the team owner';
+  let h=`<header class="stack"><button class="linkbtn" data-act="pin-back" style="align-self:flex-start">‹ Not ${esc(p.name)}? Pick another name</button><div class="eyebrow">Roar Men's Team 2 · 2026/27</div><h1>${esc(p.name)}</h1></header>`;
+  if(!t) return h+(ui.teamErr?`<section class="card stack"><p>Cannot reach the team database. Check your signal and try again.</p><button class="btn-primary" data-act="team-retry">Try again</button></section>`:`<p class="muted">Checking…</p>`);
+  const claimed=t.claimed.indexOf(id)>=0, open=claimed||own||t.code_set;
+  const pinBox=(i,l)=>`<label for="${i}" class="small muted">${l}</label><input class="field pin" id="${i}" type="password" inputmode="numeric" autocomplete="off" maxlength="8">`;
+  h+=`<section class="card stack">`;
+  if(claimed) h+=`<p><b>Enter your PIN</b> to open your log.</p>`+pinBox('pin-in','PIN');
+  else if(!open) h+=`<p><b>The team is not open yet.</b> ${esc(on)} has to sign in first and set a team code. Ask for the code, then come back.</p><button data-act="team-retry">Check again</button>`;
+  else h+=`<p><b>First time here.</b> Choose a PIN of 4 to 8 digits. It keeps your log private and opens it on any phone. It cannot be shown to you again, so pick one you will remember.</p>`
+    +pinBox('pin-in','New PIN')+pinBox('pin-in2','Repeat PIN')
+    +(own?'':`<label for="code-in" class="small muted">Team code (ask ${esc(on)})</label><input class="field" id="code-in" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(st.code||'')}">`);
+  if(st.err) h+=`<p class="small" style="color:var(--danger)">${esc(st.err)}</p>`;
+  if(open) h+=`<button class="btn-primary" data-act="pin-go" ${st.busy?'disabled':''}>${st.busy?'Checking…':claimed?'Open my log':'Save PIN and continue'}</button>`;
+  if(claimed) h+=`<p class="small muted">Forgot it? ${own?'It can be reset from the database dashboard.':'Ask '+esc(on)+' to reset it from Settings.'}</p>`;
+  return h+`</section>`;
 }
 function render(){
   alignCurrent();
   const inSession=ui.view==='session'&&S.current;
-  const pick=OWN_APP&&(!WHO||ui.who);
-  const html=pick?viewWho():inSession?viewSession():ui.view==='progress'?viewProgress():ui.view==='programs'?viewPrograms():viewTrain();
+  const pick=OWN_APP&&(!WHO||ui.who||!!ui.pin);
+  const html=ui.pin&&OWN_APP?viewPin():pick?viewWho():inSession?viewSession():ui.view==='progress'?viewProgress():ui.view==='programs'?viewPrograms():viewTrain();
   document.querySelector('.dock').hidden=!!pick;
   $('app').innerHTML=html; G.host=null;
   ['train','progress','programs'].forEach(v=>{const on=(v===ui.view)||(v==='train'&&ui.view==='session');const b=$('tab-'+v); if(on)b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');});
@@ -1295,19 +1381,36 @@ function validateProgram(o){
   return '';
 }
 const ACT={
-  tab(d){ui.view=d.v;ui.confirm=null;if(d.v!=='progress')ui.just=null;render();window.scrollTo(0,0)},
+  tab(d){ui.view=d.v;ui.confirm=null;if(d.v!=='progress')ui.just=null;render();window.scrollTo(0,0); if(d.v==='programs'&&TOKEN&&WHO===OWNER) loadTeam()},
   team(d){ if(d.v==='beach'&&!canBeach()) return; ui.confirm=null;S.settings.team=d.v;saveSettings();render()},
   'who-open'(){ui.who=true;render();window.scrollTo(0,0)},
   'who-close'(){ui.who=false;render()},
   who(d){
-    if(d.id===WHO){ui.who=false;render();return}
-    try{ const k=BASEKEY+'.'+d.id;
-      /* a log made on this device before names existed goes to the first person who picks a name */
-      if(!WHO&&!localStorage.getItem(BASEKEY+'.claimed')){const old=localStorage.getItem(BASEKEY); if(old&&!localStorage.getItem(k)) localStorage.setItem(k,old); localStorage.setItem(BASEKEY+'.claimed','1')}
-      localStorage.setItem(WHOKEY,d.id);
-    }catch(e){toast('This browser is blocking storage, so it cannot remember who you are.');return}
-    location.reload()
+    if(d.id===WHO&&!needPin()){ui.who=false;render();return}
+    if(d.id==='guest'||tokOf(d.id)){switchTo(d.id);return}          /* guest, or already signed in on this device */
+    ui.pin={id:d.id,err:''};ui.team=null;ui.teamErr=false;render();window.scrollTo(0,0);loadTeam()
   },
+  'pin-back'(){ if(needPin()){try{localStorage.removeItem(WHOKEY)}catch(e){} location.reload();return} ui.pin=null;ui.who=true;render() },
+  'team-retry'(){ui.team=null;ui.teamErr=false;render();loadTeam()},
+  async 'pin-go'(){
+    const st=ui.pin; if(!st||st.busy) return;
+    const pin=($('pin-in')||{}).value||'', p2=$('pin-in2'), ce=$('code-in'); if(ce) st.code=ce.value.trim();
+    if(!/^\d{4,8}$/.test(pin)){st.err='Use 4 to 8 digits.';render();return}
+    if(p2&&p2.value!==pin){st.err='The two PINs do not match.';render();return}
+    if(ce&&!st.code){st.err='Type the team code.';render();return}
+    st.busy=true;st.err='';render();
+    let o; try{o=await rpc('sign_in',{p_id:st.id,p_pin:pin,p_code:st.code||null})}catch(e){st.busy=false;st.err='Cannot reach the team database. Check your signal and try again.';render();return}
+    st.busy=false;
+    if(o&&o.ok){ try{localStorage.setItem(tokKey(st.id),o.token)}catch(e){st.err='This browser is blocking storage.';render();return} switchTo(st.id);return }
+    st.err=PINERR(o); render(); if(o&&(o.err==='no_code_yet'||o.err==='bad_pin'&&p2)) loadTeam();
+  },
+  async 'sign-out'(){ const t=TOKEN; try{localStorage.removeItem(tokKey(WHO));localStorage.removeItem(WHOKEY)}catch(e){} try{ if(t) await rpc('sign_out',{p_token:t}) }catch(e){} location.reload() },
+  async 'pin-change'(){ const el=$('pin-new'), v=el?el.value:''; if(!/^\d{4,8}$/.test(v)){toast('Use 4 to 8 digits');return}
+    try{const o=await rpc('change_pin',{p_token:TOKEN,p_pin:v}); if(o&&o.ok){el.value='';toast('PIN changed')} else if(o&&o.err==='auth') authLost(); else toast('Could not change the PIN')}catch(e){toast('No connection. PIN not changed.')} },
+  async 'code-save'(){ const el=$('code-new'), v=el?el.value.trim():''; if(v.length<6){toast('Use at least 6 characters');return}
+    try{const o=await rpc('set_team_code',{p_token:TOKEN,p_code:v}); if(o&&o.ok){el.value='';toast('Team code saved');loadTeam()} else if(o&&o.err==='auth') authLost(); else toast('Could not save the team code')}catch(e){toast('No connection. Code not saved.')} },
+  async 'pin-reset'(){ const el=$('reset-who'), v=el?el.value:''; if(!v) return;
+    try{const o=await rpc('reset_pin',{p_token:TOKEN,p_id:v}); if(o&&o.ok){toast('PIN reset. They can choose a new one.');loadTeam()} else if(o&&o.err==='auth') authLost(); else toast('Could not reset that PIN')}catch(e){toast('No connection. Nothing was reset.')} },
   role(d){const pr=activeProgram(); if(!pr||!pr.roles||!pr.roles[d.v]) return; (S.settings.roles=S.settings.roles||{})[pr.id]=d.v;saveSettings();render()},
   hold(d){armAudio();const s=+d.s||30;rest={end:Date.now()+s*1000,total:s,rang:false,hold:true};tick()},
   week(d){const pr=activeProgram(); if(!pr) return; ui.confirm=null;progState(pr.id).week=+d.v;saveSettings();render()},
@@ -1348,7 +1451,11 @@ const ACT={
       const last=lastLog(key), lp=last&&(last.sets[i]||last.sets[last.sets.length-1]);
       if(it.load!==false&&(r.w==null||r.w==='')){const prev=i>0?rows[i-1].w:null; if(prev!=null&&prev!=='') r.w=prev; else if(lp&&lp.w!=null&&lp.w!=='') r.w=wOf(lp.w,last.s);}
       if(r.r==null||r.r==='') r.r=parseInt(it.reps)||'';
-      r.done=true; startRest(it.rest||60);
+      r.done=true;
+      /* in a superset, go straight to the partner exercise; the rest comes once the whole round is done */
+      const grp=paired(it.code)?c.day.items.filter(o=>o.code[0]===it.code[0]&&paired(o.code)):[it];
+      const waiting=grp.some(o=>o!==it&&i<setsFor(o,c.wk)&&!((cur.sets[exKey(o.name)]||[])[i]||{}).done);
+      if(waiting){rest=null;tick()} else startRest(Math.max.apply(null,grp.map(o=>o.rest||60)));
     }
     saveCurrent();render()
   },
