@@ -56,6 +56,9 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .btn-ghost{background:transparent} .btn-danger{color:var(--danger)}
 .btn-wide{width:100%}
 .chip{min-height:36px;padding:4px 12px;border-radius:99px;font-size:.85rem}
+.who-row{display:flex;flex-wrap:wrap;gap:8px}
+.who{min-height:44px;padding:8px 16px;border-radius:99px}
+.who[aria-pressed="true"]{background:var(--court);border-color:transparent;color:#fff}
 .seg{display:flex;background:var(--sunk);border-radius:12px;padding:4px;gap:4px}
 .seg button{flex:1;border:0;background:transparent;min-height:40px;padding:6px 8px;color:var(--muted)}
 .seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.15)}
@@ -857,17 +860,36 @@ async function readPdfFile(file){
     if(file.size>25e6) throw new Error('That file is too big to be a training PDF.');
     const buf=await file.arrayBuffer(), prog=parseProgram(toRuns(await pdfItems(new Uint8Array(buf))),file.name);
     if(!prog.days.length||!prog.days.some(d=>d.items.length)) throw new Error('I could not find the workout tables in this PDF. It may be a scan or use a different layout. Use the Claude chat option below instead.');
+    if(!canBeach()) prog.team='indoor';
     ui.pdf={draft:prog,file:file.name,rep:pdfReport(prog)};
   }catch(e){ ui.pdf={err:(e&&e.message)||'Could not read that PDF.',file:file.name} }
   render(); const el=$('pdf-card'); if(el) el.scrollIntoView({block:'start'});
 }
 
 /* ============ State ============ */
-const KEY='roarGymLog.v1';
+/* installed-app mode: the same page served from its own web address, outside Claude. Everything stays on the device. */
+const OWN_APP=!(window.claude&&window.claude.use), APP_VERSION='2026.11.14.1926';
+/* ---- team roster (Roar Men's Team 2, 2026/27): pick your name, each person's log is kept separately on the device ---- */
+const POS={setter:'Setters',opposite:'Opposites',middle:'Middle blocker',outside:'Outside hitters',libero:'Liberos'};
+const ROSTER=[
+ ['Alexandru M.','setter'],['Dima M.','setter'],['Hendson','setter'],
+ ['Wyatt P.','opposite'],['Jack Y.','opposite'],['Harry W.','opposite'],['Elijah I.','opposite'],
+ ['Charles L.','middle'],
+ ['Nam P.','outside'],['Nicolas R.','outside'],['Juan Pablo I.','outside'],['Justin P.','outside'],['Lam P.','outside'],['Youngjin J.','outside'],['Chung T.','outside'],['James P.','outside'],
+ ['Nicholas C.','libero'],['Travis L.','libero']
+].map(r=>({id:r[0].toLowerCase().replace(/[^a-z]+/g,'-').replace(/-$/,''),name:r[0],pos:r[1]}));
+const BEACH_ONLY=['juan-pablo-i'];   /* who gets the beach program in the team app */
+const BASEKEY='roarGymLog.v1', WHOKEY='roarGymLog.who';
+let WHO=null; if(OWN_APP){try{WHO=localStorage.getItem(WHOKEY)||null}catch(e){}}
+const ME=WHO?(ROSTER.find(p=>p.id===WHO)||{id:WHO,name:'Guest',pos:null}):null;
+const canBeach=()=>!OWN_APP||(!!WHO&&BEACH_ONLY.includes(WHO));
+const KEY=WHO?BASEKEY+'.'+WHO:BASEKEY;
 let S={settings:{team:'indoor',active:{indoor:BUILTIN.id},unit:'kg',split:2,prog:{},deleted:[],updatedAt:0},sessions:{},current:null,currentAt:0,programs:{},measures:{at:0,list:[]}};
 let ui={view:'train',demo:null,alt:{},warmOpen:true,confirm:null,exSel:null,openSess:null,sync:'local',importErr:'',just:null,mType:'jump'};
 try{const raw=localStorage.getItem(KEY); if(raw){const o=JSON.parse(raw); S=Object.assign(S,o); S.settings=Object.assign({team:'indoor',active:{},unit:'kg',split:2,prog:{},deleted:[],updatedAt:0},o.settings||{})}}catch(e){}
 if(!S.settings.active.indoor) S.settings.active.indoor=BUILTIN.id;
+if(ME&&ME.pos&&!(S.settings.roles||{})[BUILTIN.id]) (S.settings.roles=S.settings.roles||{})[BUILTIN.id]=ME.pos;   /* the roster already says what each person plays */
+if(!canBeach()&&S.settings.team==='beach') S.settings.team='indoor';
 if(!S.measures||!Array.isArray(S.measures.list)) S.measures={at:0,list:[]};
 function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
 
@@ -956,7 +978,6 @@ async function pull(){
 }
 if(window.claude&&window.claude.use){ window.claude.use('db').then(d=>{ if(d){db=d;pull();flush();} }).catch(()=>{}); }
 /* ---- installed-app mode: the same page served from its own web address, outside Claude. Everything stays on the device. ---- */
-const OWN_APP=!(window.claude&&window.claude.use), APP_VERSION='2026.11.14.1911';
 const installed=()=>{try{return !!(navigator.standalone||matchMedia('(display-mode: standalone)').matches)}catch(e){return false}};
 let installEvt=null; window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installEvt=e; if(ui.view!=='session') softRender()});
 if(OWN_APP){try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}}
@@ -1049,8 +1070,8 @@ function demoBlock(id,item){
 }
 function viewTrain(){
   const pr=activeProgram(), team=S.settings.team;
-  let h=`<header class="stack"><div class="eyebrow">${team==='beach'?'Beach':'Indoor'}${pr&&pr.roles?' · '+esc(pr.roles[roleOf(pr)].name):''}</div><h1>Roar Gym Log</h1>
-   <div class="seg" role="group" aria-label="Team"><button data-act="team" data-v="indoor" aria-pressed="${team==='indoor'}">Indoor</button><button data-act="team" data-v="beach" aria-pressed="${team==='beach'}">Beach</button></div></header>`;
+  let h=`<header class="stack"><div class="row"><div class="eyebrow grow">${ME?esc(ME.name)+' · ':''}${team==='beach'?'Beach':'Indoor'}${pr&&pr.roles?' · '+esc(pr.roles[roleOf(pr)].name):''}</div>${ME?'<button class="linkbtn small" data-act="who-open">Switch person</button>':''}</div><h1>Roar Gym Log</h1>
+   ${canBeach()?`<div class="seg" role="group" aria-label="Team"><button data-act="team" data-v="indoor" aria-pressed="${team==='indoor'}">Indoor</button><button data-act="team" data-v="beach" aria-pressed="${team==='beach'}">Beach</button></div>`:''}</header>`;
   if(!pr){
     return h+`<section class="card stack"><h2>No ${esc(team)} program yet</h2><p>When you get the ${esc(team)} PDF, open the Programs tab. It has a ready-made prompt that turns the PDF into a program you paste in here.</p><button class="btn-primary" data-act="tab" data-v="programs">Add a program</button></section>`;
   }
@@ -1185,7 +1206,7 @@ function viewPrograms(){
   if(OWN_APP&&!installed()&&!S.settings.hideInstall) h+=`<section class="card hi stack"><h2>Put it on your home screen</h2>
    ${installEvt?`<button class="btn-primary" data-act="install">Install the app</button>`:`<p class="small"><b>iPhone:</b> open this page in Safari, tap the Share button, then “Add to Home Screen”.<br><b>Android:</b> tap the ⋮ menu in Chrome, then “Install app” or “Add to Home screen”.</p>`}
    <p class="small muted">It then opens full screen like any app, works without signal in the gym, and updates itself.</p><button class="linkbtn small" style="align-self:flex-start" data-act="hide-install">Hide this</button></section>`;
-  ['indoor','beach'].forEach(team=>{
+  (canBeach()?['indoor','beach']:['indoor']).forEach(team=>{
     const list=Object.values(progs).filter(x=>x.team===team);
     h+=`<section class="stack"><h2>${team}</h2>`;
     if(!list.length) h+=`<p class="muted">No ${team} program yet. Add one below when you get the PDF.</p>`;
@@ -1198,7 +1219,7 @@ function viewPrograms(){
   else if(pd.draft){const d=pd.draft, rp=pd.rep;
     h+=`<p class="small muted">Read from ${esc(pd.file)} on this device. Check it against the PDF before you save.</p>
      <label class="small muted" for="pdf-name">Name</label><input class="field" id="pdf-name" value="${esc(d.name)}">
-     <div class="seg" role="group" aria-label="Team"><button data-act="pdf-team" data-v="indoor" aria-pressed="${d.team==='indoor'}">Indoor</button><button data-act="pdf-team" data-v="beach" aria-pressed="${d.team==='beach'}">Beach</button></div>
+     ${canBeach()?`<div class="seg" role="group" aria-label="Team"><button data-act="pdf-team" data-v="indoor" aria-pressed="${d.team==='indoor'}">Indoor</button><button data-act="pdf-team" data-v="beach" aria-pressed="${d.team==='beach'}">Beach</button></div>`:''}
      <p class="small"><b>${d.days.length} days</b> · ${d.weeks.length} weeks · ${d.warmup.length} warm-up moves${d.roles?' · finishers for '+Object.values(d.roles).map(r=>esc(r.name)).join(', '):''}</p>`;
     d.days.forEach((day,i)=>{h+=`<details ${i===0?'open':''}><summary><span class="grow"><b>Day ${i+1}.</b> ${esc(day.title)}</span>${day.optional?'<span class="pill">Optional</span>':''}</summary><table>${day.items.map(it=>`<tr><td><b>${esc(it.code)}</b> ${esc(it.name)}${it.alt?' <span class="muted">or '+esc(it.alt.name)+'</span>':''}</td><td>${it.sets} × ${esc(it.reps)}<br><span class="muted small">rest ${it.rest}s${it.anim?'':' · no demo'}</span></td></tr>`).join('')}</table></details>`});
     if(d.roles) h+=`<details><summary><b>Finishers by position</b></summary><table>${Object.values(d.roles).map(r=>r.items.map(it=>`<tr><td>${esc(r.name)}: ${esc(it.name)}</td><td>${it.sets} × ${esc(it.reps)}${it.anim?'':'<br><span class="muted small">no demo</span>'}</td></tr>`).join('')).join('')}</table></details>`;
@@ -1220,17 +1241,26 @@ function viewPrograms(){
    <textarea id="import-text" placeholder='{ "id": "...", "name": "...", "team": "indoor", ... }' aria-label="Program JSON">${esc(ui.importText||'')}</textarea>
    ${ui.importErr?`<p class="small" style="color:var(--danger)">${esc(ui.importErr)}</p>`:''}
    <button class="btn-primary" data-act="import">Add program</button></div></details></section>`;
-  h+=`<section class="stack"><h2>Settings</h2><div class="row"><span class="grow">Weight unit</span><div class="seg" style="min-width:130px"><button data-act="unit" data-v="kg" aria-pressed="${S.settings.unit==='kg'}">kg</button><button data-act="unit" data-v="lb" aria-pressed="${S.settings.unit==='lb'}">lb</button></div></div>
+  h+=`<section class="stack"><h2>Settings</h2>${ME?`<div class="row"><span class="grow">Logging as <b>${esc(ME.name)}</b></span><button data-act="who-open">Switch person</button></div>`:''}<div class="row"><span class="grow">Weight unit</span><div class="seg" style="min-width:130px"><button data-act="unit" data-v="kg" aria-pressed="${S.settings.unit==='kg'}">kg</button><button data-act="unit" data-v="lb" aria-pressed="${S.settings.unit==='lb'}">lb</button></div></div>
    <p class="small muted">Switching converts everything you have logged: lifts, targets, charts and body weight.</p>
    <p class="small"><b>${ui.sync==='ok'?'Saved to your Claude account.':'Saved on this device.'}</b> <span class="muted">${ui.sync==='ok'?'Your log follows you between phone and laptop.':OWN_APP?'Your log and your programs stay on this device and are private to you. Nothing is uploaded. Copy a backup now and then, and before changing phones.':'Account sync is not available right now, so the log lives in this browser only. Keep a backup.'}</span></p>
    ${OWN_APP&&!/^__/.test(APP_VERSION)?`<div class="row small"><span class="muted grow">Version ${esc(APP_VERSION)}</span><button class="chip" data-act="update">Check for update</button></div>`:''}
    <details ${ui.restoreText?'open':''}><summary>Backup and restore</summary><div class="stack" style="padding-top:8px"><button data-act="copy-backup">Copy my whole log</button><textarea id="restore-text" placeholder="Paste a backup here to restore it" aria-label="Backup to restore">${esc(ui.restoreText||'')}</textarea><button data-act="restore">Restore from pasted backup</button></div></details></section>`;
   return h;
 }
+function viewWho(){
+  let h=`<header class="stack">${WHO?'<button class="linkbtn" data-act="who-close" style="align-self:flex-start">‹ Back</button>':''}<div class="eyebrow">Roar Men's Team 2 · 2026/27</div><h1>Who are you?</h1>
+   <p>Tap your name. Each person's workouts, weights and programs are kept separately on this device.</p></header>`;
+  Object.keys(POS).forEach(k=>{h+=`<section class="stack"><h2>${esc(POS[k])}</h2><div class="who-row">${ROSTER.filter(p=>p.pos===k).map(p=>`<button class="who" data-act="who" data-id="${esc(p.id)}" aria-pressed="${p.id===WHO}">${esc(p.name)}</button>`).join('')}</div></section>`});
+  h+=`<section class="stack"><p class="small muted">Not on the list?</p><div class="who-row"><button class="who" data-act="who" data-id="guest" aria-pressed="${WHO==='guest'}">Continue as guest</button></div></section>`;
+  return h;
+}
 function render(){
   alignCurrent();
   const inSession=ui.view==='session'&&S.current;
-  const html=inSession?viewSession():ui.view==='progress'?viewProgress():ui.view==='programs'?viewPrograms():viewTrain();
+  const pick=OWN_APP&&(!WHO||ui.who);
+  const html=pick?viewWho():inSession?viewSession():ui.view==='progress'?viewProgress():ui.view==='programs'?viewPrograms():viewTrain();
+  document.querySelector('.dock').hidden=!!pick;
   $('app').innerHTML=html; G.host=null;
   ['train','progress','programs'].forEach(v=>{const on=(v===ui.view)||(v==='train'&&ui.view==='session');const b=$('tab-'+v); if(on)b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');});
   tick();
@@ -1266,7 +1296,18 @@ function validateProgram(o){
 }
 const ACT={
   tab(d){ui.view=d.v;ui.confirm=null;if(d.v!=='progress')ui.just=null;render();window.scrollTo(0,0)},
-  team(d){ui.confirm=null;S.settings.team=d.v;saveSettings();render()},
+  team(d){ if(d.v==='beach'&&!canBeach()) return; ui.confirm=null;S.settings.team=d.v;saveSettings();render()},
+  'who-open'(){ui.who=true;render();window.scrollTo(0,0)},
+  'who-close'(){ui.who=false;render()},
+  who(d){
+    if(d.id===WHO){ui.who=false;render();return}
+    try{ const k=BASEKEY+'.'+d.id;
+      /* a log made on this device before names existed goes to the first person who picks a name */
+      if(!WHO&&!localStorage.getItem(BASEKEY+'.claimed')){const old=localStorage.getItem(BASEKEY); if(old&&!localStorage.getItem(k)) localStorage.setItem(k,old); localStorage.setItem(BASEKEY+'.claimed','1')}
+      localStorage.setItem(WHOKEY,d.id);
+    }catch(e){toast('This browser is blocking storage, so it cannot remember who you are.');return}
+    location.reload()
+  },
   role(d){const pr=activeProgram(); if(!pr||!pr.roles||!pr.roles[d.v]) return; (S.settings.roles=S.settings.roles||{})[pr.id]=d.v;saveSettings();render()},
   hold(d){armAudio();const s=+d.s||30;rest={end:Date.now()+s*1000,total:s,rang:false,hold:true};tick()},
   week(d){const pr=activeProgram(); if(!pr) return; ui.confirm=null;progState(pr.id).week=+d.v;saveSettings();render()},
