@@ -872,7 +872,7 @@ async function readPdfFile(file){
 
 /* ============ State ============ */
 /* installed-app mode: the same page served from its own web address, outside Claude. Everything stays on the device. */
-const OWN_APP=!(window.claude&&window.claude.use), APP_VERSION='2026.11.14.1945';
+const OWN_APP=!(window.claude&&window.claude.use), APP_VERSION='2026.11.17.1424';
 /* ---- team roster (Roar Men's Team 2, 2026/27): pick your name, each person's log is kept separately on the device ---- */
 const POS={setter:'Setters',opposite:'Opposites',middle:'Middle blocker',outside:'Outside hitters',libero:'Liberos'};
 const ROSTER=[
@@ -1064,19 +1064,28 @@ function alignCurrent(){
   c.unit=u; saveCurrent();
 }
 function toast(msg){const t=$('toast');t.textContent=msg;t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>t.hidden=true,2400)}
-const paired=code=>code[0]!=='A'&&code[0]!=='D';
+/* supersets are on unless the person turns them off; off means every exercise is done on its own, all sets, with its own rest */
+const ssOn=()=>S.settings.superset!==false;
+const pairCode=code=>code[0]!=='A'&&code[0]!=='D';
+const paired=code=>ssOn()&&pairCode(code);
+const hasPairs=day=>day.items.some((it,x)=>x>0&&pairCode(it.code)&&day.items[x-1].code[0]===it.code[0]);
+/* planned sets plus any extra sets added during this session */
+const extraOf=(cur,it)=>Math.max(0,((cur&&cur.extra)||{})[exKey(it.name)]|0);
+const nSets=(cur,it,wk)=>setsFor(it,wk)+extraOf(cur,it);
+/* the exercises done together with this one (itself only, unless it sits in a superset) */
+const groupOf=(day,it)=>paired(it.code)?day.items.filter(o=>o.code[0]===it.code[0]&&paired(o.code)):[it];
 /* the order to work through a day: paired blocks (B1/B2, C1/C2) alternate set by set */
-function planOf(day,wk){
+function planOf(day,wk,cur){
   const groups=[]; day.items.forEach((it,x)=>{const g=groups[groups.length-1]; if(g&&g.L===it.code[0]&&paired(it.code)) g.xs.push(x); else groups.push({L:it.code[0],xs:[x]})});
-  const out=[]; groups.forEach(g=>{const ns=g.xs.map(x=>setsFor(day.items[x],wk)), mx=Math.max.apply(null,ns); for(let i=0;i<mx;i++) g.xs.forEach((x,k)=>{if(i<ns[k]) out.push({x,i})})});
+  const out=[]; groups.forEach(g=>{const ns=g.xs.map(x=>nSets(cur,day.items[x],wk)), mx=Math.max.apply(null,ns); for(let i=0;i<mx;i++) g.xs.forEach((x,k)=>{if(i<ns[k]) out.push({x,i})})});
   return out;
 }
 function sessCtx(){const cur=S.current; if(!cur) return null; const pr=allPrograms()[cur.pid], day=pr&&pr.days.find(d=>d.id===cur.dayId); if(!day) return null;
-  const wk=pr.weeks[cur.week-1]||pr.weeks[0], plan=planOf(day,wk), isDone=s=>{const r=(cur.sets[exKey(day.items[s.x].name)]||[])[s.i];return !!(r&&r.done)};
+  const wk=pr.weeks[cur.week-1]||pr.weeks[0], plan=planOf(day,wk,cur), isDone=s=>{const r=(cur.sets[exKey(day.items[s.x].name)]||[])[s.i];return !!(r&&r.done)};
   const next=plan.find(s=>!isDone(s))||null, done=plan.filter(isDone).length;
   return {cur,pr,day,wk,plan,next,done,total:plan.length};
 }
-function nextLabel(c){ if(!c||!c.next) return 'All sets done. Finish below.'; const it=c.day.items[c.next.x]; return it.code+' '+it.name+' · set '+(c.next.i+1)+' of '+setsFor(it,c.wk); }
+function nextLabel(c){ if(!c||!c.next) return 'All sets done. Finish below.'; const it=c.day.items[c.next.x]; return it.code+' '+it.name+' · set '+(c.next.i+1)+' of '+nSets(c.cur,it,c.wk); }
 
 /* ============ Next set / rest timer dock ============ */
 let rest=null, audio=null, wake=null;
@@ -1149,7 +1158,8 @@ function viewSession(){
   let h=`<header class="stack"><button class="linkbtn" data-act="overview" style="align-self:flex-start">‹ Back to overview</button>
    <div class="eyebrow">Week ${cur.week} · ${esc(wk.title)}</div><h1>${esc(day.title)}</h1>
    <div class="row small"><span class="grow"><b>${c.done} of ${c.total}</b> sets done</span><span class="muted">${mins} min in</span></div><div class="meter"><i style="width:${c.total?Math.round(100*c.done/c.total):0}%"></i></div>
-   <p class="cue">${esc(wk.note)}</p></header>`;
+   <p class="cue">${esc(wk.note)}</p>
+   ${hasPairs(day)?`<div class="row small"><span class="grow"><b>Supersets</b> <span class="muted">${ssOn()?'B1 then B2 back to back, then rest':'Each exercise on its own, with its own rest'}</span></span><div class="seg" style="min-width:120px"><button data-act="superset" data-v="1" aria-pressed="${ssOn()}">On</button><button data-act="superset" data-v="0" aria-pressed="${!ssOn()}">Off</button></div></div>`:''}</header>`;
   if(pr.warmup&&pr.warmup.length){
     const nd=pr.warmup.filter((w,i)=>cur.warm[i]).length;
     h+=`<details class="card warm" ${ui.warmOpen?'open':''} data-warm><summary><span class="grow"><span class="eyebrow">Before you lift · 10–12 min</span><br>Dynamic warm-up</span><span class="pill ${nd===pr.warmup.length?'ok':''}">${nd} / ${pr.warmup.length}</span></summary><ul>`;
@@ -1159,7 +1169,7 @@ function viewSession(){
   }
   /* one entry per exercise: everything needed to draw it, alone or inside a superset */
   const info=day.items.map((it,idx)=>{
-    const key=exKey(it.name), id='x'+idx, n=setsFor(it,wk), rows=cur.sets[key]||[], last=lastLog(key), nw=it.load===false;
+    const key=exKey(it.name), id='x'+idx, n=setsFor(it,wk), xs=extraOf(cur,it), tot=n+xs, rows=cur.sets[key]||[], last=lastLog(key), nw=it.load===false;
     let badges='';
     if(wk.eccentric&&it.main) badges+='<span class="pill warn">3-sec lowering</span> ';
     if(wk.dropSets) badges+=`<span class="pill">Deload: ${n} sets, fast</span> `;
@@ -1179,8 +1189,11 @@ function viewSession(){
        (nw?'':`<input id="w-${idx}-${i}" inputmode="decimal" aria-label="${esc(it.name)} set ${i+1} weight" data-k="${esc(key)}" data-i="${i}" data-f="w" value="${r.w!=null?esc(r.w):''}" placeholder="${lw!=null?esc(lw)+(ss?' '+esc(S.settings.unit):''):(ss?esc(S.settings.unit):'–')}">`)+
        `<input id="r-${idx}-${i}" inputmode="numeric" aria-label="${esc(it.name)} set ${i+1} ${esc(what)}" data-k="${esc(key)}" data-i="${i}" data-f="r" value="${r.r!=null?esc(r.r):''}" placeholder="${esc((parseInt(it.reps)||'')+(ss?' '+what:''))}">
        <button data-act="set" data-x="${idx}" data-i="${i}" aria-pressed="${!!r.done}">${r.done?'✓ Done':'Done'}</button></div>`};
-    return {it,idx,n,nw,badges,hint,demo,hold,what,row};
+    return {it,idx,n,xs,tot,nw,badges,hint,demo,hold,what,row,lastDone:!!(rows[tot-1]||{}).done};
   });
+  /* add a set (or a round) beyond the plan; an extra one can be taken off again while it is not ticked */
+  const xbar=(es,word)=>{const ex=es.filter(e=>e.xs>0), canRm=ex.length&&!ex.some(e=>e.lastDone), full=Math.max.apply(null,es.map(e=>e.xs))>=6;
+    return `<div class="row">${full?'':`<button class="chip" data-act="xset" data-x="${es[0].idx}" data-v="1">+ Extra ${word}</button>`}${canRm?`<button class="chip btn-ghost" data-act="xset" data-x="${es[0].idx}" data-v="-1">Remove extra ${word}</button>`:''}</div>`};
   /* exercises that share a letter (B1 + B2, C1 + C2) are one superset: shown as one block, round by round */
   const groups=[]; day.items.forEach((it,x)=>{const g=groups[groups.length-1]; if(g&&g.L===it.code[0]&&paired(it.code)) g.xs.push(x); else groups.push({L:it.code[0],xs:[x]})});
   groups.forEach(g=>{
@@ -1189,15 +1202,15 @@ function viewSession(){
        ${e.badges?`<div>${e.badges}</div>`:''}<p class="small">${esc(it.focus||'')}</p>${e.demo}
        ${e.hint?`<p class="small muted">${esc(e.hint)}</p>`:''}${e.hold}<div class="sets">
        <div class="set ${e.nw?'nw':''}"><span></span>${e.nw?'':`<span class="set-h">${esc(S.settings.unit)}</span>`}<span class="set-h">${esc(e.what)}</span><span></span></div>`;
-      for(let i=0;i<e.n;i++) h+=e.row(i,i+1,false);
-      h+=`</div></section>`;
+      for(let i=0;i<e.tot;i++) h+=e.row(i,i+1,false);
+      h+=`</div>${e.xs?`<p class="small muted">${e.xs} extra set${e.xs===1?'':'s'} on top of the plan.</p>`:''}${xbar([e],'set')}</section>`;
     } else {
-      const es=g.xs.map(x=>info[x]), rounds=Math.max.apply(null,es.map(e=>e.n)), restS=Math.max.apply(null,es.map(e=>e.it.rest||60));
-      h+=`<section class="card ex ss"><div class="ex-head"><span class="code">${esc(g.L)}</span><div class="grow"><h3>Superset ${esc(g.L)}</h3><div class="target">${rounds} rounds <span class="muted">· ${es.map(e=>esc(e.it.code)).join(' then ')}, then rest ${restS}s</span></div></div></div>`;
+      const es=g.xs.map(x=>info[x]), plan=Math.max.apply(null,es.map(e=>e.n)), rounds=Math.max.apply(null,es.map(e=>e.tot)), restS=Math.max.apply(null,es.map(e=>e.it.rest||60));
+      h+=`<section class="card ex ss"><div class="ex-head"><span class="code">${esc(g.L)}</span><div class="grow"><h3>Superset ${esc(g.L)}</h3><div class="target">${plan} rounds <span class="muted">· ${es.map(e=>esc(e.it.code)).join(' then ')}, then rest ${restS}s</span></div></div></div>`;
       es.forEach(e=>{h+=`<div class="ss-ex stack" id="ex-${e.idx}"><div><b>${esc(e.it.code)} · ${esc(e.it.name)}</b> <span class="target">${e.n} × ${esc(e.it.reps)}</span></div>
         ${e.badges?`<div>${e.badges}</div>`:''}<p class="small">${esc(e.it.focus||'')}</p>${e.demo}${e.hint?`<p class="small muted">${esc(e.hint)}</p>`:''}${e.hold}</div>`});
-      for(let i=0;i<rounds;i++) h+=`<div class="round stack"><div class="eyebrow">Round ${i+1}</div><div class="sets">${es.filter(e=>i<e.n).map(e=>e.row(i,e.it.code,true)).join('')}</div></div>`;
-      h+=`</section>`;
+      for(let i=0;i<rounds;i++) h+=`<div class="round stack"><div class="eyebrow">Round ${i+1}${i>=plan?' · extra':''}</div><div class="sets">${es.filter(e=>i<e.tot).map(e=>e.row(i,e.it.code,true)).join('')}</div></div>`;
+      h+=`<div class="round">${xbar(es,'round')}</div></section>`;
     }
   });
   h+=`<section class="stack"><label for="sess-note"><b>Notes</b> <span class="muted small">How it felt, any pain, what to change next time</span></label><textarea id="sess-note" class="note">${esc(cur.note||'')}</textarea></section>`;
@@ -1312,6 +1325,8 @@ function viewPrograms(){
       ${others.length?`<div class="row"><select id="reset-who" class="grow" aria-label="Teammate">${others.map(x=>`<option value="${esc(x)}">${esc((ROSTER.find(p=>p.id===x)||{name:x}).name)}</option>`).join('')}</select><button data-act="pin-reset">Reset PIN</button></div><p class="small muted">A reset lets that person choose a new PIN. Their log is kept.</p>`:''}</div>`})():''}
    <div class="row"><span class="grow">Weight unit</span><div class="seg" style="min-width:130px"><button data-act="unit" data-v="kg" aria-pressed="${S.settings.unit==='kg'}">kg</button><button data-act="unit" data-v="lb" aria-pressed="${S.settings.unit==='lb'}">lb</button></div></div>
    <p class="small muted">Switching converts everything you have logged: lifts, targets, charts and body weight.</p>
+   <div class="row"><span class="grow">Supersets</span><div class="seg" style="min-width:130px"><button data-act="superset" data-v="1" aria-pressed="${ssOn()}">On</button><button data-act="superset" data-v="0" aria-pressed="${!ssOn()}">Off</button></div></div>
+   <p class="small muted">On: paired exercises (B1 + B2, C1 + C2) are done back to back, then you rest. Off: finish all sets of one before the next.</p>
    <p class="small"><b>${ui.sync==='ok'?(OWN_APP?'Saved online.':'Saved to your Claude account.'):'Saved on this device.'}</b> <span class="muted">${ui.sync==='ok'?(OWN_APP?'Your log is backed up in the team database behind your PIN and opens on any phone.':'Your log follows you between phone and laptop.'):TOKEN?'Not synced yet. It will sync when you have signal.':OWN_APP?'Your log and your programs stay on this device and are private to you. Nothing is uploaded. Copy a backup now and then, and before changing phones.':'Account sync is not available right now, so the log lives in this browser only. Keep a backup.'}</span></p>
    ${OWN_APP&&!/^__/.test(APP_VERSION)?`<div class="row small"><span class="muted grow">Version ${esc(APP_VERSION)}</span><button class="chip" data-act="update">Check for update</button></div>`:''}
    <details ${ui.restoreText?'open':''}><summary>Backup and restore</summary><div class="stack" style="padding-top:8px"><button data-act="copy-backup">Copy my whole log</button><textarea id="restore-text" placeholder="Paste a backup here to restore it" aria-label="Backup to restore">${esc(ui.restoreText||'')}</textarea><button data-act="restore">Restore from pasted backup</button></div></details></section>`;
@@ -1453,11 +1468,20 @@ const ACT={
       if(r.r==null||r.r==='') r.r=parseInt(it.reps)||'';
       r.done=true;
       /* in a superset, go straight to the partner exercise; the rest comes once the whole round is done */
-      const grp=paired(it.code)?c.day.items.filter(o=>o.code[0]===it.code[0]&&paired(o.code)):[it];
-      const waiting=grp.some(o=>o!==it&&i<setsFor(o,c.wk)&&!((cur.sets[exKey(o.name)]||[])[i]||{}).done);
+      const grp=groupOf(c.day,it);
+      const waiting=grp.some(o=>o!==it&&i<nSets(cur,o,c.wk)&&!((cur.sets[exKey(o.name)]||[])[i]||{}).done);
       if(waiting){rest=null;tick()} else startRest(Math.max.apply(null,grp.map(o=>o.rest||60)));
     }
     saveCurrent();render()
+  },
+  superset(d){const on=d.v==='1'; if(on===ssOn()) return; S.settings.superset=on;saveSettings();render();tick();toast(on?'Supersets on':'Supersets off: one exercise at a time')},
+  /* one more set than planned (a whole round inside a superset), or take the last extra one off again */
+  xset(d){
+    const c=sessCtx(); if(!c) return; const cur=c.cur, it=c.day.items[+d.x]; if(!it) return;
+    const grp=groupOf(c.day,it), ex=cur.extra||(cur.extra={});
+    if(d.v==='-1') grp.forEach(o=>{const k=exKey(o.name); if(!(ex[k]>0)) return; const n=nSets(cur,o,c.wk), rows=cur.sets[k]; if(rows&&rows[n-1]&&rows[n-1].done) return; ex[k]--; if(!ex[k]) delete ex[k]; if(rows&&rows.length>n-1) rows.length=n-1});
+    else if(Math.max.apply(null,grp.map(o=>extraOf(cur,o)))<6) grp.forEach(o=>{const k=exKey(o.name); ex[k]=extraOf(cur,o)+1});
+    saveCurrent();render();tick()
   },
   'rest-add'(){if(rest){rest.end+=15000;rest.total+=15;tick()}},
   'rest-skip'(){rest=null;tick()},
