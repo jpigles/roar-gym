@@ -1,5 +1,5 @@
 /* Service worker: lets the app open without signal and keeps everyone on the latest version. */
-const V='2026.11.17.1424', CORE='core-'+V, RT='runtime-v1';
+const V='2026.11.17.2155', CORE='core-'+V, RT='runtime-v1';
 const SHELL=['./','manifest.webmanifest','icon-192.png','icon-512.png','icon-180.png'];
 const LIBS=['https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js','https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js','https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'];
 self.addEventListener('install',e=>{e.waitUntil(Promise.all([caches.open(CORE).then(c=>c.addAll(SHELL)),caches.open(RT).then(c=>Promise.all(LIBS.map(u=>c.match(u).then(m=>m||c.add(u).catch(()=>{})))))]).then(()=>self.skipWaiting()))});

@@ -125,6 +125,15 @@ select,.field{width:100%;min-height:44px;border:1px solid var(--line);border-rad
 .now .bar{height:4px;background:var(--sunk);border-radius:2px;overflow:hidden}
 .now .bar i{display:block;height:100%;background:var(--accent)}
 .stat{font-family:var(--display);font-size:2rem;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.stat.sm{font-size:1.5rem}
+.tabs.t4 button{font-size:1rem;letter-spacing:.03em}
+.rank{display:grid;grid-template-columns:1.6rem 1fr auto;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.rank:first-child{border-top:0}
+.rank .n{font-family:var(--display);font-size:1.2rem;color:var(--muted);text-align:center}
+.rank.me .who-n{color:var(--court)}
+.rank .v{font-family:var(--display);font-size:1.25rem;font-weight:700;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.rank .dots{color:var(--court)}
+.rank .dots i{width:11px;height:11px;border-width:2px;opacity:1}
 .chart text{font-family:var(--body);font-size:11px;fill:var(--muted)}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 td,th{text-align:left;padding:6px 4px;border-top:1px solid var(--line);font-size:.9rem;vertical-align:top}
@@ -145,6 +154,7 @@ td,th{text-align:left;padding:6px 4px;border-top:1px solid var(--line);font-size
   <nav class="tabs" aria-label="Sections">
     <button id="tab-train" data-act="tab" data-v="train">Train</button>
     <button id="tab-progress" data-act="tab" data-v="progress">Progress</button>
+    <button id="tab-team" data-act="tab" data-v="team" hidden>Team</button>
     <button id="tab-programs" data-act="tab" data-v="programs">Programs</button>
   </nav>
 </div></div>
@@ -872,7 +882,7 @@ async function readPdfFile(file){
 
 /* ============ State ============ */
 /* installed-app mode: the same page served from its own web address, outside Claude. Everything stays on the device. */
-const OWN_APP=!(window.claude&&window.claude.use), APP_VERSION='2026.11.17.1424';
+const OWN_APP=!(window.claude&&window.claude.use), APP_VERSION='2026.11.17.2155';
 /* ---- team roster (Roar Men's Team 2, 2026/27): pick your name, each person's log is kept separately on the device ---- */
 const POS={setter:'Setters',opposite:'Opposites',middle:'Middle blocker',outside:'Outside hitters',libero:'Liberos'};
 const ROSTER=[
@@ -947,7 +957,7 @@ async function flush(){
   flushing=false; setSync('ok');
 }
 function setSync(v){ if(ui.sync!==v){ui.sync=v; if(ui.view==='programs') softRender();} }
-function saveSettings(){S.settings.updatedAt=Date.now();saveLocal();queue('app/settings',1)}
+function saveSettings(){S.settings.updatedAt=Date.now();saveLocal();queue('app/settings',1);pushBoard()}
 function saveMeasures(){S.measures.at=Date.now();saveLocal();queue('app/measures',1)}
 let curTimer=null;
 function saveCurrent(now){S.currentAt=Date.now();saveLocal();clearTimeout(curTimer);
@@ -977,7 +987,7 @@ async function pull(){
     Object.keys(S.programs).forEach(id=>{ if(pdel.has(id)) delete S.programs[id]; else if(!pseen.has(id)) queue('programs/'+id,S.programs[id]) });
     /* an open session that is already saved as finished (or was deleted) is a leftover: close it */
     if(S.current&&((S.sessions[S.current.id]&&S.sessions[S.current.id].finishedAt)||del.has(S.current.id))){S.current=null;S.currentAt=Date.now();queue('app/current',{at:S.currentAt,session:null})}
-    saveLocal(); setSync('ok'); softRender();
+    saveLocal(); setSync('ok'); softRender(); pushBoard();
   }catch(e){setSync('local')}
 }
 if(window.claude&&window.claude.use){ window.claude.use('db').then(d=>{ if(d){db=d;pull();flush();} }).catch(()=>{}); }
@@ -1056,6 +1066,52 @@ const unitOf=o=>(o&&(o.unit||o.u))||S.settings.legacyUnit||S.settings.unit;
 const wOf=(v,s)=>conv(v,unitOf(s),S.settings.unit);
 function topWeight(sets,s){let m=null;sets.forEach(x=>{if(x.done&&x.w!=null&&x.w!==''&&!isNaN(+x.w)&&(m==null||+x.w>m))m=+x.w});return m==null?null:+wOf(m,s)}
 const setTxt=(x,s)=>(x.w!=null&&x.w!==''?wOf(x.w,s)+' × ':'')+x.r;
+const num=v=>v!=null&&v!==''&&!isNaN(+v)?+v:null;
+/* ---- suggested weight and reps for today, shown in grey in the boxes and filled in when "Done" is tapped on an empty row.
+   Rules, in order: a "+x%" week adds that to the week-1 weight on the main lifts; a deload or slow-lowering week keeps last
+   time's weight; otherwise, with a rep range (8–10), aim for one more rep than last time and go up one plate step once every
+   set reached the top of the range; with a fixed rep count, repeat last time's weight. ---- */
+const repRange=reps=>{const m=/(\d+)\s*[–—-]\s*(\d+)/.exec(reps||''), n=parseInt(reps); return m?[+m[1],+m[2]]:(n?[n,n]:null)};
+const stepOf=w=>S.settings.unit==='lb'?(w<45?2.5:5):(w<20?1:2.5);
+const toStep=(w,st)=>Math.round(Math.round(w/st)*st*10)/10;
+function suggest(cur,it,wk){
+  const key=exKey(it.name), last=lastLog(key), rng=repRange(it.reps), load=it.load!==false, planned=rng?rng[0]:(parseInt(it.reps)||'');
+  const ranged=!!rng&&rng[1]>rng[0]&&!it.u, pct=load&&it.main&&wk.loadPct?wk.loadPct:0, hold=!!(wk.dropSets||wk.eccentric);
+  const at=(a,i)=>a&&a.length?(a[i]||a[a.length-1]):null;
+  const base=pct?finished().filter(s=>s.pid===cur.pid&&s.cycle===cur.cycle&&s.week===1&&s.sets[key]&&s.sets[key].some(x=>x.done)).pop():null;
+  const baseSets=base?base.sets[key].filter(x=>x.done):null;
+  const wAt=(a,s,i)=>{const p=at(a,i), v=p?num(p.w):null; return v==null?null:+wOf(v,s)};
+  const lastW=i=>last?wAt(last.sets,last.s,i):null;
+  const allTop=ranged&&!!last&&last.sets.every(x=>num(x.r)!=null&&+x.r>=rng[1]);
+  const up=load&&!pct&&!hold&&allTop&&lastW(0)!=null;
+  const clamp=v=>Math.max(rng[0],Math.min(rng[1],v));
+  const w=i=>{ if(!load) return null; const lw=lastW(i);
+    if(pct){const b=bW(i); if(b==null) return lw; return Math.max(toStep(b*(1+pct/100),stepOf(b)),b,lw==null?0:lw)}
+    if(lw==null) return null; return up?toStep(lw+stepOf(lw),stepOf(lw)):lw };
+  const bW=i=>base?wAt(baseSets,base,i):lastW(i);
+  /* on light weights the "+x%" can be smaller than one plate step: then the weight stays and a rep is added instead */
+  const flat=!!pct&&bW(0)!=null&&w(0)<=bW(0);
+  const r=i=>{ if(!ranged||!last) return planned;
+    if(up) return rng[0];
+    const src=pct&&baseSets?at(baseSets,i):at(last.sets,i), lr=src?num(src.r):null; if(lr==null) return planned;
+    return clamp((pct&&!flat)||hold?lr:lr+1) };
+  let why='';
+  if(last){
+    if(pct) why=lastW(0)==null?'':flat?'+'+pct+'% is less than one step up at this weight, so '+(ranged?'keep the weight and add a rep':'keep the weight'):'+'+pct+'% on '+(base?'week 1':'last time')+', same reps';
+    else if(wk.dropSets) why=load?'same weight as last time, one set fewer, move it fast':'one set fewer';
+    else if(wk.eccentric) why=it.main?'same weight as last time, 3 seconds on the way down':(load?'same as last time':'');
+    else if(up) why='you hit '+rng[1]+' on every set last time, so go up';
+    else if(ranged) why=(load?'same weight, ':'')+'aim for one more rep';
+    else if(load&&lastW(0)!=null) why='same as last time';
+  }
+  return {w,r,why,has:!!last};
+}
+/* what a row shows in grey: the weight already used on the row above wins, so a session stays consistent with itself */
+const sgRow=(sg,rows,i)=>{const p=i>0&&rows[i-1]?num(rows[i-1].w):null; return {w:p!=null?p:sg.w(i),r:sg.r(i)}};
+/* first, latest and best top weight for one exercise, in the unit on screen */
+function trendOf(key){const a=[]; finished().forEach(s=>{const v=s.sets[key]?topWeight(s.sets[key],s):null; if(v!=null) a.push({v,d:s.finishedAt})}); if(!a.length) return null;
+  return {first:a[0],last:a[a.length-1],best:Math.max.apply(null,a.map(x=>x.v)),n:a.length,diff:Math.round((a[a.length-1].v-a[0].v)*10)/10}}
+const signed=v=>(v>0?'+':v<0?'−':'')+Math.abs(v);
 /* the open session is kept in the unit on screen, so the numbers in its boxes always match the label */
 function alignCurrent(){
   const c=S.current, u=S.settings.unit; if(!c||c.unit===u) return; const from=unitOf(c);
@@ -1132,6 +1188,7 @@ function viewTrain(){
   const doneIn=(w,id)=>fin.filter(s=>s.week===w&&s.dayId===id).pop();
   if(S.current){const cp=allPrograms()[S.current.pid], d=cp&&cp.days.find(x=>x.id===S.current.dayId);
     if(d) h+=`<button class="btn-primary btn-wide" data-act="resume">Resume ${esc(d.title)}${cp.id!==pr.id?' ('+esc(cp.team)+')':S.current.week!==ps.week?' (week '+S.current.week+')':''}</button>`;}
+  if(TOKEN&&S.settings.board==null) h+=`<section class="card hi row"><div class="grow"><b>New: Team board</b><br><span class="small muted">See who has trained this week and how the lifts compare.</span></div><button data-act="tab" data-v="team">Open</button></section>`;
   h+=`<section class="stack"><div class="row"><h2 class="grow">${esc(pr.name)}</h2><span class="pill">Cycle ${ps.cycle}</span></div>
    <div class="weeks" role="group" aria-label="Week">`+pr.weeks.map((w,i)=>`<button data-act="week" data-v="${i+1}" aria-pressed="${ps.week===i+1}" aria-label="Week ${i+1}, ${esc(w.title)}"><b>${i+1}</b><span>${esc(w.title)}</span><span class="dots">${pr.days.map(d=>`<i class="${doneIn(i+1,d.id)?'on':''}"></i>`).join('')}</span></button>`).join('')+`</div>
    <p class="cue"><b>Week ${ps.week}.</b> ${esc(wk.note)}</p></section>`;
@@ -1173,23 +1230,22 @@ function viewSession(){
     let badges='';
     if(wk.eccentric&&it.main) badges+='<span class="pill warn">3-sec lowering</span> ';
     if(wk.dropSets) badges+=`<span class="pill">Deload: ${n} sets, fast</span> `;
+    const what=it.u||'reps', sg=suggest(cur,it,wk), sw=sg.w(0), sr=sg.r(0), tr=nw?null:trendOf(key);
     let hint='';
     if(last) hint=`Last (${fmtDate(last.s.finishedAt)}): `+last.sets.map(x=>setTxt(x,last.s)).join(', ');
-    if(wk.loadPct&&it.main&&it.load!==false){
-      const base=finished().filter(s=>s.pid===cur.pid&&s.cycle===cur.cycle&&s.week===1&&s.sets[key]).pop(), tw=base&&topWeight(base.sets[key],base);
-      if(tw) hint+=(hint?' · ':'')+`Target ≈ ${Math.round(tw*(1+wk.loadPct/100)*2)/2} ${S.settings.unit} (+${wk.loadPct}%)`;
-      else badges+=`<span class="pill warn">+${wk.loadPct}% vs week 1</span> `;
-    }
+    if(wk.loadPct&&it.main&&!nw&&sw==null) badges+=`<span class="pill warn">+${wk.loadPct}% vs week 1</span> `;
+    if(tr&&tr.n>1) badges+=`<span class="pill ${tr.diff>0?'ok':''}">${tr.diff>0?'▲':tr.diff<0?'▼':'●'} ${tr.diff?esc(signed(tr.diff))+' '+esc(S.settings.unit)+' since '+esc(fmtDate(tr.first.d)):'level since '+esc(fmtDate(tr.first.d))}</span> `;
+    /* today's suggestion in words; the same numbers sit in grey in the boxes below */
+    const sugg=sg.has&&(sw!=null||sg.why)?`<p class="small"><b>Suggested today:</b> ${sw!=null?esc(sw)+' '+esc(S.settings.unit)+' × ':''}${esc(sr)} ${esc(what)}${sg.why?` <span class="muted">· ${esc(sg.why)}</span>`:''}</p>`:'';
     const demo=`<button class="linkbtn small" style="align-self:flex-start" data-act="demo" data-id="${id}">${ui.demo===id?'Hide demo':'Show me how'}</button>${ui.demo===id?demoBlock(id,it):''}`;
     const hold=it.hold?`<button class="chip" style="align-self:flex-start" data-act="hold" data-s="${+it.hold}">Start ${+it.hold} s hold timer</button>`:'';
-    const what=it.u||'reps';
     /* one set row; inside a superset the first cell shows the exercise code and the boxes say what goes in them */
-    const row=(i,label,ss)=>{const r=rows[i]||{}, lp=last&&(last.sets[i]||last.sets[last.sets.length-1]), isNext=c.next&&c.next.x===idx&&c.next.i===i, lw=lp&&lp.w!=null&&lp.w!==''?wOf(lp.w,last.s):null;
+    const row=(i,label,ss)=>{const r=rows[i]||{}, isNext=c.next&&c.next.x===idx&&c.next.i===i, g=sgRow(sg,rows,i), lw=g.w;
       return `<div class="set ${nw?'nw':''} ${r.done?'done':''} ${isNext?'next':''}"><span class="i">${esc(label)}</span>`+
        (nw?'':`<input id="w-${idx}-${i}" inputmode="decimal" aria-label="${esc(it.name)} set ${i+1} weight" data-k="${esc(key)}" data-i="${i}" data-f="w" value="${r.w!=null?esc(r.w):''}" placeholder="${lw!=null?esc(lw)+(ss?' '+esc(S.settings.unit):''):(ss?esc(S.settings.unit):'–')}">`)+
-       `<input id="r-${idx}-${i}" inputmode="numeric" aria-label="${esc(it.name)} set ${i+1} ${esc(what)}" data-k="${esc(key)}" data-i="${i}" data-f="r" value="${r.r!=null?esc(r.r):''}" placeholder="${esc((parseInt(it.reps)||'')+(ss?' '+what:''))}">
+       `<input id="r-${idx}-${i}" inputmode="numeric" aria-label="${esc(it.name)} set ${i+1} ${esc(what)}" data-k="${esc(key)}" data-i="${i}" data-f="r" value="${r.r!=null?esc(r.r):''}" placeholder="${esc(g.r+(ss?' '+what:''))}">
        <button data-act="set" data-x="${idx}" data-i="${i}" aria-pressed="${!!r.done}">${r.done?'✓ Done':'Done'}</button></div>`};
-    return {it,idx,n,xs,tot,nw,badges,hint,demo,hold,what,row,lastDone:!!(rows[tot-1]||{}).done};
+    return {it,idx,n,xs,tot,nw,badges,hint,sugg,demo,hold,what,row,lastDone:!!(rows[tot-1]||{}).done};
   });
   /* add a set (or a round) beyond the plan; an extra one can be taken off again while it is not ticked */
   const xbar=(es,word)=>{const ex=es.filter(e=>e.xs>0), canRm=ex.length&&!ex.some(e=>e.lastDone), full=Math.max.apply(null,es.map(e=>e.xs))>=6;
@@ -1200,7 +1256,7 @@ function viewSession(){
     if(g.xs.length===1){const e=info[g.xs[0]], it=e.it;
       h+=`<section class="card ex" id="ex-${e.idx}"><div class="ex-head"><span class="code">${esc(it.code)}</span><div class="grow"><h3>${esc(it.name)}</h3><div class="target">${e.n} × ${esc(it.reps)} <span class="muted">· rest ${it.rest}s</span></div></div></div>
        ${e.badges?`<div>${e.badges}</div>`:''}<p class="small">${esc(it.focus||'')}</p>${e.demo}
-       ${e.hint?`<p class="small muted">${esc(e.hint)}</p>`:''}${e.hold}<div class="sets">
+       ${e.hint?`<p class="small muted">${esc(e.hint)}</p>`:''}${e.sugg}${e.hold}<div class="sets">
        <div class="set ${e.nw?'nw':''}"><span></span>${e.nw?'':`<span class="set-h">${esc(S.settings.unit)}</span>`}<span class="set-h">${esc(e.what)}</span><span></span></div>`;
       for(let i=0;i<e.tot;i++) h+=e.row(i,i+1,false);
       h+=`</div>${e.xs?`<p class="small muted">${e.xs} extra set${e.xs===1?'':'s'} on top of the plan.</p>`:''}${xbar([e],'set')}</section>`;
@@ -1208,7 +1264,7 @@ function viewSession(){
       const es=g.xs.map(x=>info[x]), plan=Math.max.apply(null,es.map(e=>e.n)), rounds=Math.max.apply(null,es.map(e=>e.tot)), restS=Math.max.apply(null,es.map(e=>e.it.rest||60));
       h+=`<section class="card ex ss"><div class="ex-head"><span class="code">${esc(g.L)}</span><div class="grow"><h3>Superset ${esc(g.L)}</h3><div class="target">${plan} rounds <span class="muted">· ${es.map(e=>esc(e.it.code)).join(' then ')}, then rest ${restS}s</span></div></div></div>`;
       es.forEach(e=>{h+=`<div class="ss-ex stack" id="ex-${e.idx}"><div><b>${esc(e.it.code)} · ${esc(e.it.name)}</b> <span class="target">${e.n} × ${esc(e.it.reps)}</span></div>
-        ${e.badges?`<div>${e.badges}</div>`:''}<p class="small">${esc(e.it.focus||'')}</p>${e.demo}${e.hint?`<p class="small muted">${esc(e.hint)}</p>`:''}${e.hold}</div>`});
+        ${e.badges?`<div>${e.badges}</div>`:''}<p class="small">${esc(e.it.focus||'')}</p>${e.demo}${e.hint?`<p class="small muted">${esc(e.hint)}</p>`:''}${e.sugg}${e.hold}</div>`});
       for(let i=0;i<rounds;i++) h+=`<div class="round stack"><div class="eyebrow">Round ${i+1}${i>=plan?' · extra':''}</div><div class="sets">${es.filter(e=>i<e.tot).map(e=>e.row(i,e.it.code,true)).join('')}</div></div>`;
       h+=`<div class="round">${xbar(es,'round')}</div></section>`;
     }
@@ -1244,13 +1300,30 @@ function viewProgress(){
   if(!f.length) h+=`<section class="card stack"><h2>Nothing logged yet</h2><p>Finish your first workout and it shows up here: every session, plus a chart of your top weight for each lift so you can see it climb week to week.</p><button class="btn-primary" data-act="tab" data-v="train">Go to today's workout</button></section>`;
   else{
     h+=`<section class="row"><div class="card grow"><div class="stat">${f.length}</div><div class="small muted">workouts logged</div></div><div class="card grow"><div class="stat">${f.filter(s=>s.finishedAt>month).length}</div><div class="small muted">in the last 4 weeks</div></div></section>`;
-    const names={}; f.forEach(s=>{Object.keys(s.sets).forEach(k=>{if(topWeight(s.sets[k],s)!=null)names[k]=(s.names&&s.names[k])||k})});
+    /* lift tracker: every exercise that has been logged, by top weight, total reps or volume */
+    const names={}, hasW={}; f.forEach(s=>{Object.keys(s.sets).forEach(k=>{ if(!s.sets[k].some(x=>x.done)) return; names[k]=(s.names&&s.names[k])||k; if(topWeight(s.sets[k],s)!=null) hasW[k]=1 })});
     const keys=Object.keys(names).sort((a,b)=>names[a].localeCompare(names[b]));
-    if(keys.length){ if(!names[ui.exSel]) ui.exSel=keys[0];
-      const pts=f.filter(s=>s.sets[ui.exSel]&&topWeight(s.sets[ui.exSel],s)!=null).map(s=>({d:s.finishedAt,v:topWeight(s.sets[ui.exSel],s),s,sets:s.sets[ui.exSel].filter(x=>x.done)}));
-      h+=`<section class="stack"><h2>Weight by lift</h2><label class="small muted" for="exsel">Exercise</label><select id="exsel">${keys.map(k=>`<option value="${esc(k)}" ${k===ui.exSel?'selected':''}>${esc(names[k])}</option>`).join('')}</select>
-       <div class="card">${chartSVG(pts,'Top weight per session')}<p class="small muted">Heaviest set each session, in ${esc(S.settings.unit)}.</p></div>
-       <table><tr><th>Date</th><th>Sets (${esc(S.settings.unit)} × reps)</th></tr>${pts.slice().reverse().slice(0,8).map(q=>`<tr><td>${esc(fmtDate(q.d))}</td><td>${q.sets.map(x=>esc(setTxt(x,q.s))).join(', ')}</td></tr>`).join('')}</table></section>`;
+    if(keys.length){ if(!names[ui.exSel]) ui.exSel=keys.find(k=>hasW[k])||keys[0];
+      const k=ui.exSel, u=S.settings.unit, metric=hasW[k]?(ui.metric||'top'):'reps';
+      const val=s=>{const a=s.sets[k].filter(x=>x.done);
+        if(metric==='top') return topWeight(s.sets[k],s);
+        if(metric==='reps') return a.reduce((t,x)=>t+(num(x.r)||0),0)||null;
+        return Math.round(a.reduce((t,x)=>t+(num(x.w)!=null?+wOf(x.w,s)*(num(x.r)||0):0),0))||null};
+      const pts=f.filter(s=>s.sets[k]&&s.sets[k].some(x=>x.done)).map(s=>({d:s.finishedAt,v:val(s),s,sets:s.sets[k].filter(x=>x.done)})).filter(q=>q.v!=null);
+      const ML={top:['Top weight','Heaviest set each session, in '+u+'.',u],reps:['Reps','All reps of this exercise added up, per session.','reps'],vol:['Volume','Weight × reps added up over every set, per session ('+u+').',u]}[metric];
+      h+=`<section class="stack" id="tracker"><h2>Lift tracker</h2><label class="small muted" for="exsel">Exercise</label><select id="exsel">${keys.map(x=>`<option value="${esc(x)}" ${x===k?'selected':''}>${esc(names[x])}</option>`).join('')}</select>
+       ${hasW[k]?`<div class="seg" role="group" aria-label="What to track">${[['top','Top weight'],['reps','Reps'],['vol','Volume']].map(m=>`<button data-act="metric" data-v="${m[0]}" aria-pressed="${metric===m[0]}">${m[1]}</button>`).join('')}</div>`:''}`;
+      if(pts.length){const a=pts[0], z=pts[pts.length-1], best=Math.max.apply(null,pts.map(q=>q.v)), d=Math.round((z.v-a.v)*10)/10, pc=a.v?Math.round(100*(z.v-a.v)/a.v):0;
+        h+=`<div class="row"><div class="card grow"><div class="stat sm">${z.v}</div><div class="small muted">latest${ML[2]==='reps'?' reps':' '+esc(ML[2])}</div></div>
+          <div class="card grow"><div class="stat sm" style="color:var(${d>0?'--ok':'--fg'})">${pts.length>1?esc(signed(d)):'–'}</div><div class="small muted">${pts.length>1?(pc?esc(signed(pc))+'% ':'')+'since '+esc(fmtDate(a.d)):'log it again to see the change'}</div></div>
+          <div class="card grow"><div class="stat sm">${best}</div><div class="small muted">best so far</div></div></div>
+         <div class="card">${chartSVG(pts,ML[0]+' per session')}<p class="small muted">${esc(ML[1])}</p></div>
+         <table><tr><th>Date</th><th>Sets (${hasW[k]?esc(u)+' × ':''}reps)</th></tr>${pts.slice().reverse().slice(0,8).map(q=>`<tr><td>${esc(fmtDate(q.d))}</td><td>${q.sets.map(x=>esc(setTxt(x,q.s))).join(', ')}</td></tr>`).join('')}</table>`;}
+      h+=`</section>`;
+      /* every weighted lift on one screen: where it started, where it is now */
+      const rowsAll=keys.filter(x=>hasW[x]).map(x=>({k:x,t:trendOf(x)})).filter(x=>x.t).sort((p,q)=>(q.t.first.v?q.t.diff/q.t.first.v:0)-(p.t.first.v?p.t.diff/p.t.first.v:0));
+      if(rowsAll.length>1) h+=`<section class="stack"><h2>All lifts at a glance</h2><p class="small muted">Top weight in ${esc(u)}: first session, latest session and the change. Tap a lift to chart it.</p>
+        <table><tr><th>Lift</th><th>First</th><th>Now</th><th>Change</th></tr>${rowsAll.map(x=>`<tr><td><button class="linkbtn small" style="text-align:left" data-act="exsel" data-id="${esc(x.k)}">${esc(names[x.k])}</button></td><td>${x.t.first.v}</td><td>${x.t.last.v}</td><td style="white-space:nowrap;${x.t.diff>0?'color:var(--ok);font-weight:700':''}">${x.t.n>1?(x.t.diff>0?'▲ ':x.t.diff<0?'▼ ':'')+esc(signed(x.t.diff)):'–'}</td></tr>`).join('')}</table></section>`;
     }
   }
   const mt=MT[ui.mType], mu=mt.u||S.settings.unit, ml=S.measures.list.filter(x=>x.type===ui.mType).sort((a,b)=>a.d-b.d).map(x=>mt.u?x:O({},x,{v:+wOf(x.v,x)}));
@@ -1332,6 +1405,84 @@ function viewPrograms(){
    <details ${ui.restoreText?'open':''}><summary>Backup and restore</summary><div class="stack" style="padding-top:8px"><button data-act="copy-backup">Copy my whole log</button><textarea id="restore-text" placeholder="Paste a backup here to restore it" aria-label="Backup to restore">${esc(ui.restoreText||'')}</textarea><button data-act="restore">Restore from pasted backup</button></div></details></section>`;
   return h;
 }
+/* ============ Team board (installed app, signed in) ============
+   Each person who joins the board uploads a small summary of their own log (doc "app/board"): when they trained, sets, reps and
+   weight moved per workout for the last 10 weeks, and first / latest / best top weight per lift, all in kg. Nothing else leaves
+   the private log: no notes, no body weight, no jump tests. Everyone signed in can read those summaries (team_board function).
+   Joining is a choice: settings.board is undefined until the person answers, true = on the board, false = not. */
+const weekStart=t=>{const d=new Date(t==null?Date.now():t); d.setHours(0,0,0,0); d.setDate(d.getDate()-((d.getDay()+6)%7)); return d.getTime()};
+function boardData(){
+  const progs=allPrograms(), f=finished().filter(s=>(progs[s.pid]||{}).team!=='beach'), since=Date.now()-70*864e5, kg=(v,s)=>+conv(v,unitOf(s),'kg');
+  const s=f.filter(x=>x.finishedAt>since).map(x=>{let n=0,r=0,v=0; Object.values(x.sets).forEach(a=>a.forEach(q=>{ if(!q||!q.done) return; n++; const rr=num(q.r)||0, ww=num(q.w); r+=rr; if(ww!=null) v+=kg(ww,x)*rr })); return {t:x.finishedAt,n,r,v:Math.round(v)}});
+  const lifts={}; f.forEach(x=>Object.keys(x.sets).forEach(k=>{let top=null,tr=null; x.sets[k].forEach(q=>{const ww=q&&q.done?num(q.w):null; if(ww!=null&&ww>0&&(top==null||ww>top)){top=ww;tr=q.r}}); if(top==null) return;
+    const w=kg(top,x), L=lifts[k]||(lifts[k]={n:String((x.names&&x.names[k])||k).slice(0,60),f:w,c:0}); L.l=w; L.c++; if(L.b==null||w>L.b){L.b=w;L.r=tr;L.t=x.finishedAt} }));
+  const pr=allPrograms()[activeId('indoor')], ps=pr?progState(pr.id):{week:1,cycle:1};
+  return {v:1,split:S.settings.split===3?3:2,week:ps.week,weeks:pr?pr.weeks.length:4,cycle:ps.cycle,s,lifts};
+}
+let boardSent=null;
+function pushBoard(){
+  if(!TOKEN||!db||S.settings.board==null) return;
+  if(S.settings.board===false){ if(boardSent!=='off'){boardSent='off';queue('app/board',DEL)} return }
+  const d=boardData(), j=JSON.stringify(d); if(j===boardSent) return; boardSent=j; d.at=Date.now(); queue('app/board',d);
+}
+async function loadBoard(force){
+  if(!TOKEN||(!force&&ui.board&&Date.now()-ui.board.at<30000)) return; ui.boardErr=false;
+  try{const o=await rpc('team_board',{p_token:TOKEN}); if(o&&o.ok) ui.board={rows:Array.isArray(o.rows)?o.rows:[],joined:+o.joined||0,at:Date.now()}; else if(o&&o.err==='auth'){authLost();return} else ui.boardErr=true}
+  catch(e){ui.boardErr=true}
+  if(ui.view==='team') softRender();
+}
+function viewTeam(){
+  const u=S.settings.unit, share=S.settings.board, b=ui.board, seg=(act,cur,opts)=>`<div class="seg" role="group">${opts.map(o=>`<button data-act="${act}" data-v="${o[0]}" aria-pressed="${cur===o[0]}">${o[1]}</button>`).join('')}</div>`;
+  let h=`<header class="stack"><div class="eyebrow">Roar Men's Team 2 · 2026/27</div><h1>Team board</h1></header>`;
+  if(share==null) h+=`<section class="card hi stack"><h2>Join the team board?</h2><p class="small">Teammates on the board see each other's <b>training days, sets, reps and weight totals, and top weight per lift</b>. Your notes, body weight and jump tests are never shared.</p><div class="row"><button class="btn-primary grow" data-act="board-me" data-v="1">Join the board</button><button data-act="board-me" data-v="0">Not now</button></div></section>`;
+  if(!b) return h+(ui.boardErr?`<section class="card stack"><p>Cannot load the team board. Check your signal and try again.</p><button class="btn-primary" data-act="board-load">Try again</button></section>`:`<p class="muted">Loading…</p>`);
+  /* other people's summaries are data from outside: everything is coerced to numbers or escaped before it is shown */
+  const rows=b.rows.filter(r=>r&&r.id!==WHO&&r.data&&typeof r.data==='object').map(r=>({id:String(r.id),d:r.data}));
+  if(share===true) rows.push({id:WHO,d:boardData()});
+  rows.forEach(r=>{const p=ROSTER.find(x=>x.id===r.id); r.name=p?p.name:r.id; r.me=r.id===WHO;
+    r.s=(Array.isArray(r.d.s)?r.d.s:[]).filter(x=>x&&num(x.t)!=null).map(x=>({t:+x.t,n:num(x.n)||0,r:num(x.r)||0,v:num(x.v)||0}));
+    r.lifts=r.d.lifts&&typeof r.d.lifts==='object'?r.d.lifts:{}});
+  const tab=ui.bTab||'week', who=r=>`<b class="who-n">${esc(r.name)}</b>${r.me?' <span class="muted small">(you)</span>':''}`;
+  h+=seg('btab',tab,[['week','This week'],['lifts','Lifts'],['totals','Totals']]);
+  if(!rows.length) h+=`<section class="card"><p class="muted">Nobody is on the board yet. Be the first.</p></section>`;
+  else if(tab==='week'){
+    const ws=weekStart(), W=7*864e5, wsN=w=>weekStart(ws-w*W+432e5);
+    rows.forEach(r=>{r.n=r.s.filter(x=>x.t>=ws).length; r.target=r.d.split===3?3:2; r.ok=r.n>=r.target; r.lastT=r.s.reduce((m,x)=>Math.max(m,x.t),0);
+      let st=0; for(let w=r.ok?0:1;w<10;w++){const a=wsN(w), z=w?wsN(w-1):Infinity; if(r.s.filter(x=>x.t>=a&&x.t<z).length>=r.target) st++; else break} r.streak=st});
+    rows.sort((p,q)=>(q.ok-p.ok)||(q.n-p.n)||(q.streak-p.streak)||p.name.localeCompare(q.name));
+    h+=`<section class="stack"><p><b>${rows.filter(r=>r.ok).length} of ${rows.length}</b> have finished this week's training.</p><div class="card">`+rows.map(r=>{
+      const wkN=Math.max(1,Math.min(99,parseInt(r.d.week)||1)), wks=Math.max(wkN,Math.min(99,parseInt(r.d.weeks)||4));
+      return `<div class="rank ${r.me?'me':''}"><span class="n" style="color:var(--ok)">${r.ok?'✓':''}</span><div>${who(r)}<div class="small muted">Program week ${wkN} of ${wks} · ${r.lastT?'last trained '+esc(fmtDate(r.lastT)):'no workouts yet'}${r.streak>=2?' · '+r.streak+' weeks in a row':''}</div></div>
+        <div class="dots" role="img" aria-label="${r.n} of ${r.target} workouts this week">${Array.from({length:Math.max(r.target,Math.min(r.n,7))},(_,i)=>`<i class="${i<r.n?'on':''}"></i>`).join('')}</div></div>`}).join('')+
+      `</div><p class="small muted">The week runs Monday to Sunday. Everyone counts against their own plan (2 or 3 days), whichever program week they are on.</p></section>`;
+  }
+  else if(tab==='lifts'){
+    const all={}; rows.forEach(r=>Object.keys(r.lifts).forEach(k=>{const L=r.lifts[k]; if(!L||num(L.b)==null) return; const a=all[k]||(all[k]={n:String(L.n||k).slice(0,60),c:0}); a.c++}));
+    const keys=Object.keys(all).sort((p,q)=>(all[q].c-all[p].c)||all[p].n.localeCompare(all[q].n));
+    if(!keys.length) h+=`<section class="card"><p class="muted">No lifts with a weight have been logged yet.</p></section>`;
+    else{ if(!all[ui.bEx]) ui.bEx=keys[0]; const k=ui.bEx, mode=ui.bMode||'best', cv=v=>+conv(v,'kg',u);
+      const list=rows.map(r=>{const L=r.lifts[k]; if(!L||num(L.b)==null) return null;
+        if(mode==='best') return {r,v:cv(+L.b),txt:cv(+L.b)+' '+u,sub:(num(L.r)!=null?'× '+(+L.r)+' reps':'')+(num(L.t)!=null?' · '+fmtDate(+L.t):'')};
+        if(num(L.f)==null||num(L.l)==null||!(L.c>1)) return null; const d=Math.round((cv(+L.l)-cv(+L.f))*10)/10, pc=+L.f?Math.round(100*(L.l-L.f)/L.f):0;
+        return {r,v:pc,txt:signed(pc)+'%',sub:cv(+L.f)+' → '+cv(+L.l)+' '+u+' ('+signed(d)+')'}}).filter(Boolean).sort((p,q)=>q.v-p.v);
+      h+=`<section class="stack"><label class="small muted" for="bex">Lift</label><select id="bex">${keys.map(x=>`<option value="${esc(x)}" ${x===k?'selected':''}>${esc(all[x].n)} (${all[x].c})</option>`).join('')}</select>${seg('bmode',mode,[['best','Heaviest'],['gain','Most improved']])}
+        <div class="card">${list.length?list.map((e,i)=>`<div class="rank ${e.r.me?'me':''}"><span class="n">${i+1}</span><div>${who(e.r)}<div class="small muted">${esc(e.sub)}</div></div><div class="v">${esc(e.txt)}</div></div>`).join(''):`<p class="muted">${mode==='gain'?'Nobody has logged this lift twice yet.':'Nobody has logged this lift yet.'}</p>`}</div>
+        <p class="small muted">${mode==='best'?'Heaviest set each person has logged on this lift.':'Change in top weight from each person\'s first session on this lift to their latest, as a percentage, so it is fair across body sizes.'}</p></section>`;
+    }
+  }
+  else{
+    const per=ui.bPer||'w', met=ui.bMet||'v', from=per==='w'?weekStart():Date.now()-28*864e5, cvt=v=>Math.round(+conv(v,'kg',u));
+    const list=rows.map(r=>{const a=r.s.filter(x=>x.t>=from), tot=a.reduce((t,x)=>t+x[met],0); return {r,v:tot,c:a.length}}).sort((p,q)=>(q.v-p.v)||p.r.name.localeCompare(q.r.name));
+    h+=`<section class="stack">${seg('bper',per,[['w','This week'],['m','Last 4 weeks']])}${seg('bmet',met,[['v','Weight moved'],['r','Reps'],['n','Sets']])}
+      <div class="card">${list.map((e,i)=>`<div class="rank ${e.r.me?'me':''}"><span class="n">${e.v?i+1:''}</span><div>${who(e.r)}<div class="small muted">${e.c} workout${e.c===1?'':'s'}</div></div><div class="v">${e.v?(met==='v'?cvt(e.v).toLocaleString()+' '+esc(u):e.v.toLocaleString()):'–'}</div></div>`).join('')}</div>
+      <p class="small muted">${met==='v'?'Weight × reps added up over every set. Bodyweight exercises count as zero.':met==='r'?'Every rep of every ticked set.':'Every ticked set.'}</p></section>`;
+  }
+  h+=`<section class="stack"><p class="small muted">${b.joined?b.joined+' of '+ROSTER.length+' teammates have the app. ':''}${rows.length} on the board.</p>`;
+  if(share!=null) h+=`<div class="row"><span class="grow">Show me on the board</span><div class="seg" style="min-width:130px"><button data-act="board-me" data-v="1" aria-pressed="${share===true}">On</button><button data-act="board-me" data-v="0" aria-pressed="${share===false}">Off</button></div></div>
+    <p class="small muted">On shares your training days, sets, reps and weight totals, and your top weight per lift. Notes, body weight and jump tests are never shared.</p>`;
+  h+=`<button class="chip" style="align-self:flex-start" data-act="board-load">Refresh</button></section>`;
+  return h;
+}
 function viewWho(){
   let h=`<header class="stack">${WHO?'<button class="linkbtn" data-act="who-close" style="align-self:flex-start">‹ Back</button>':''}<div class="eyebrow">Roar Men's Team 2 · 2026/27</div><h1>Who are you?</h1>
    <p>Tap your name. Your workouts, weights and programs are saved under it, behind a PIN only you know.</p></header>`;
@@ -1360,10 +1511,12 @@ function render(){
   alignCurrent();
   const inSession=ui.view==='session'&&S.current;
   const pick=OWN_APP&&(!WHO||ui.who||!!ui.pin);
-  const html=ui.pin&&OWN_APP?viewPin():pick?viewWho():inSession?viewSession():ui.view==='progress'?viewProgress():ui.view==='programs'?viewPrograms():viewTrain();
+  if(ui.view==='team'&&!TOKEN) ui.view='train';
+  const html=ui.pin&&OWN_APP?viewPin():pick?viewWho():inSession?viewSession():ui.view==='progress'?viewProgress():ui.view==='programs'?viewPrograms():ui.view==='team'?viewTeam():viewTrain();
   document.querySelector('.dock').hidden=!!pick;
+  $('tab-team').hidden=!TOKEN; document.querySelector('.tabs').classList.toggle('t4',!!TOKEN);
   $('app').innerHTML=html; G.host=null;
-  ['train','progress','programs'].forEach(v=>{const on=(v===ui.view)||(v==='train'&&ui.view==='session');const b=$('tab-'+v); if(on)b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');});
+  ['train','progress','team','programs'].forEach(v=>{const on=(v===ui.view)||(v==='train'&&ui.view==='session');const b=$('tab-'+v); if(on)b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');});
   tick();
 }
 
@@ -1396,7 +1549,10 @@ function validateProgram(o){
   return '';
 }
 const ACT={
-  tab(d){ui.view=d.v;ui.confirm=null;if(d.v!=='progress')ui.just=null;render();window.scrollTo(0,0); if(d.v==='programs'&&TOKEN&&WHO===OWNER) loadTeam()},
+  tab(d){ui.view=d.v;ui.confirm=null;if(d.v!=='progress')ui.just=null;render();window.scrollTo(0,0); if(d.v==='programs'&&TOKEN&&WHO===OWNER) loadTeam(); if(d.v==='team') loadBoard()},
+  btab(d){ui.bTab=d.v;render()}, bmode(d){ui.bMode=d.v;render()}, bper(d){ui.bPer=d.v;render()}, bmet(d){ui.bMet=d.v;render()},
+  'board-load'(){ui.board=null;ui.boardErr=false;render();loadBoard(true)},
+  'board-me'(d){const on=d.v==='1'; if(S.settings.board===on) return; S.settings.board=on;saveSettings();render();toast(on?'You are on the team board':'You are not shown on the team board')},
   team(d){ if(d.v==='beach'&&!canBeach()) return; ui.confirm=null;S.settings.team=d.v;saveSettings();render()},
   'who-open'(){ui.who=true;render();window.scrollTo(0,0)},
   'who-close'(){ui.who=false;render()},
@@ -1463,9 +1619,10 @@ const ACT={
     const r=rows[i]; (cur.names=cur.names||{})[key]=it.name;
     if(r.done){r.done=false}
     else{
-      const last=lastLog(key), lp=last&&(last.sets[i]||last.sets[last.sets.length-1]);
-      if(it.load!==false&&(r.w==null||r.w==='')){const prev=i>0?rows[i-1].w:null; if(prev!=null&&prev!=='') r.w=prev; else if(lp&&lp.w!=null&&lp.w!=='') r.w=wOf(lp.w,last.s);}
-      if(r.r==null||r.r==='') r.r=parseInt(it.reps)||'';
+      /* an empty row is logged as the suggestion that was showing in grey */
+      const g=sgRow(suggest(cur,it,c.wk),rows,i);
+      if(it.load!==false&&(r.w==null||r.w==='')&&g.w!=null) r.w=g.w;
+      if(r.r==null||r.r==='') r.r=g.r;
       r.done=true;
       /* in a superset, go straight to the partner exercise; the rest comes once the whole round is done */
       const grp=groupOf(c.day,it);
@@ -1496,13 +1653,15 @@ const ACT={
     ui.confirm=null; alignCurrent();
     const prs=[]; Object.keys(cur.sets).forEach(k=>{const tw=topWeight(cur.sets[k],cur); if(tw==null) return; let best=null; finished().forEach(s=>{const w=s.sets[k]&&topWeight(s.sets[k],s); if(w!=null&&(best==null||w>best))best=w}); if(best!=null&&tw>best) prs.push({k,w:tw,was:best,u:S.settings.unit})});
     cur.prs=prs; cur.finishedAt=Date.now(); S.sessions[cur.id]=cur; S.current=null; rest=null;
-    saveSession(cur); saveCurrent(true); try{wake&&wake.release()}catch(e){}
+    saveSession(cur); saveCurrent(true); pushBoard(); try{wake&&wake.release()}catch(e){}
     ui.view='progress';ui.just=cur.id;ui.openSess=null;render();window.scrollTo(0,0);toast('Workout saved')
   },
   'discard-yes'(){S.current=null;rest=null;ui.confirm=null;ui.view='train';saveCurrent(true);try{wake&&wake.release()}catch(e){};render()},
   sess(d){ui.openSess=ui.openSess===d.id?null:d.id;ui.confirm=null;render()},
   'del-yes'(d){delete S.sessions[d.id];(S.settings.deleted=S.settings.deleted||[]).push(d.id);ui.confirm=null;saveSettings();queue('sessions/'+d.id,DEL);render()},
   mtype(d){ui.mType=d.v;render()},
+  metric(d){ui.metric=d.v;render()},
+  exsel(d){ui.exSel=d.id;ui.metric='top';render();const el=$('tracker'); if(el) el.scrollIntoView({behavior:reduceMotion?'auto':'smooth',block:'start'})},
   'm-add'(){const v=parseFloat(($('m-val').value||'').replace(',','.')); if(isNaN(v)||v<=0){toast('Type a number first');return}
     const m={id:'m'+Date.now().toString(36),type:ui.mType,v,d:Date.now()}; if(!MT[ui.mType].u) m.u=S.settings.unit;
     S.measures.list.push(m);saveMeasures();render();toast('Added')},
@@ -1562,6 +1721,7 @@ document.addEventListener('change',e=>{
   if(t.dataset&&t.dataset.warmI!=null&&S.current){S.current.warm[t.dataset.warmI]=t.checked;saveCurrent();
     const pr=allPrograms()[S.current.pid]; if(pr.warmup.every((w,i)=>S.current.warm[i])) ui.warmOpen=false; render();}
   if(t.id==='exsel'){ui.exSel=t.value;render()}
+  if(t.id==='bex'){ui.bEx=t.value;render()}
   if(t.dataset&&t.dataset.roleSel!=null) ACT.role({v:t.value});
   if(t.id==='pdf-file'&&t.files&&t.files[0]) readPdfFile(t.files[0]);
 });
