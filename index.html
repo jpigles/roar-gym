@@ -882,7 +882,7 @@ async function readPdfFile(file){
 
 /* ============ State ============ */
 /* installed-app mode: the same page served from its own web address, outside Claude. Everything stays on the device. */
-const OWN_APP=!(window.claude&&window.claude.use), APP_VERSION='2026.11.17.2155';
+const OWN_APP=!(window.claude&&window.claude.use), APP_VERSION='2026.11.20.1708';
 /* ---- team roster (Roar Men's Team 2, 2026/27): pick your name, each person's log is kept separately on the device ---- */
 const POS={setter:'Setters',opposite:'Opposites',middle:'Middle blocker',outside:'Outside hitters',libero:'Liberos'};
 const ROSTER=[
@@ -986,7 +986,7 @@ async function pull(){
     ps.docs.forEach(x=>{pseen.add(x.id); if(pdel.has(x.id)) queue('programs/'+x.id,DEL); else S.programs[x.id]=clone(x.data())});
     Object.keys(S.programs).forEach(id=>{ if(pdel.has(id)) delete S.programs[id]; else if(!pseen.has(id)) queue('programs/'+id,S.programs[id]) });
     /* an open session that is already saved as finished (or was deleted) is a leftover: close it */
-    if(S.current&&((S.sessions[S.current.id]&&S.sessions[S.current.id].finishedAt)||del.has(S.current.id))){S.current=null;S.currentAt=Date.now();queue('app/current',{at:S.currentAt,session:null})}
+    if(S.current&&((!S.current.edit&&S.sessions[S.current.id]&&S.sessions[S.current.id].finishedAt)||del.has(S.current.id))){S.current=null;S.currentAt=Date.now();queue('app/current',{at:S.currentAt,session:null})}
     saveLocal(); setSync('ok'); softRender(); pushBoard();
   }catch(e){setSync('local')}
 }
@@ -1058,7 +1058,9 @@ const fmtDate=ts=>new Date(ts).toLocaleDateString(undefined,{month:'short',day:'
 const fmtClock=s=>Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
 const finished=()=>Object.values(S.sessions).filter(s=>s.finishedAt).sort((a,b)=>a.finishedAt-b.finishedAt);
 function setsFor(item,week){return Math.max(1,(item.sets||1)-((week&&week.dropSets)||0))}
-function lastLog(key){const f=finished();for(let i=f.length-1;i>=0;i--){const a=(f[i].sets[key]||[]).filter(x=>x.done);if(a.length)return {s:f[i],sets:a}}return null}
+/* while a saved workout is open again for editing, "last time" means the sessions before it, not the workout itself or later ones */
+const prior=()=>{const c=S.current, f=finished(); return c&&c.edit?f.filter(s=>s.id!==c.id&&s.finishedAt<c.finishedAt):f};
+function lastLog(key){const f=prior();for(let i=f.length-1;i>=0;i--){const a=(f[i].sets[key]||[]).filter(x=>x.done);if(a.length)return {s:f[i],sets:a}}return null}
 /* ---- kg / lb: every session and body-weight entry remembers the unit it was typed in; the screen converts to the unit chosen in Settings ---- */
 const LB=2.2046226;
 function conv(v,from,to){ if(v==null||v===''||isNaN(+v)||!from||!to||from===to) return v; return Math.round((from==='lb'?+v/LB:+v*LB)*10)/10 }
@@ -1078,7 +1080,7 @@ function suggest(cur,it,wk){
   const key=exKey(it.name), last=lastLog(key), rng=repRange(it.reps), load=it.load!==false, planned=rng?rng[0]:(parseInt(it.reps)||'');
   const ranged=!!rng&&rng[1]>rng[0]&&!it.u, pct=load&&it.main&&wk.loadPct?wk.loadPct:0, hold=!!(wk.dropSets||wk.eccentric);
   const at=(a,i)=>a&&a.length?(a[i]||a[a.length-1]):null;
-  const base=pct?finished().filter(s=>s.pid===cur.pid&&s.cycle===cur.cycle&&s.week===1&&s.sets[key]&&s.sets[key].some(x=>x.done)).pop():null;
+  const base=pct?prior().filter(s=>s.pid===cur.pid&&s.cycle===cur.cycle&&s.week===1&&s.sets[key]&&s.sets[key].some(x=>x.done)).pop():null;
   const baseSets=base?base.sets[key].filter(x=>x.done):null;
   const wAt=(a,s,i)=>{const p=at(a,i), v=p?num(p.w):null; return v==null?null:+wOf(v,s)};
   const lastW=i=>last?wAt(last.sets,last.s,i):null;
@@ -1141,7 +1143,7 @@ function sessCtx(){const cur=S.current; if(!cur) return null; const pr=allProgra
   const next=plan.find(s=>!isDone(s))||null, done=plan.filter(isDone).length;
   return {cur,pr,day,wk,plan,next,done,total:plan.length};
 }
-function nextLabel(c){ if(!c||!c.next) return 'All sets done. Finish below.'; const it=c.day.items[c.next.x]; return it.code+' '+it.name+' · set '+(c.next.i+1)+' of '+nSets(c.cur,it,c.wk); }
+function nextLabel(c){ if(!c||!c.next) return c&&c.cur.edit?'All sets done. Save changes below.':'All sets done. Finish below.'; const it=c.day.items[c.next.x]; return it.code+' '+it.name+' · set '+(c.next.i+1)+' of '+nSets(c.cur,it,c.wk); }
 
 /* ============ Next set / rest timer dock ============ */
 let rest=null, audio=null, wake=null;
@@ -1187,15 +1189,20 @@ function viewTrain(){
   const ps=progState(pr.id), wk=pr.weeks[ps.week-1]||pr.weeks[0], fin=finished().filter(s=>s.pid===pr.id&&s.cycle===ps.cycle);
   const doneIn=(w,id)=>fin.filter(s=>s.week===w&&s.dayId===id).pop();
   if(S.current){const cp=allPrograms()[S.current.pid], d=cp&&cp.days.find(x=>x.id===S.current.dayId);
-    if(d) h+=`<button class="btn-primary btn-wide" data-act="resume">Resume ${esc(d.title)}${cp.id!==pr.id?' ('+esc(cp.team)+')':S.current.week!==ps.week?' (week '+S.current.week+')':''}</button>`;}
+    if(d) h+=`<button class="btn-primary btn-wide" data-act="resume">${S.current.edit?'Resume editing':'Resume'} ${esc(d.title)}${cp.id!==pr.id?' ('+esc(cp.team)+')':S.current.week!==ps.week?' (week '+S.current.week+')':''}</button>`;}
   if(TOKEN&&S.settings.board==null) h+=`<section class="card hi row"><div class="grow"><b>New: Team board</b><br><span class="small muted">See who has trained this week and how the lifts compare.</span></div><button data-act="tab" data-v="team">Open</button></section>`;
-  h+=`<section class="stack"><div class="row"><h2 class="grow">${esc(pr.name)}</h2><span class="pill">Cycle ${ps.cycle}</span></div>
+  /* a new cycle started by mistake can be undone: the cycle number steps back and whatever was logged under it moves back too */
+  const inCyc=ps.cycle>1?fin.length+(S.current&&!S.current.edit&&S.current.pid===pr.id&&S.current.cycle===ps.cycle?1:0):0;
+  h+=`<section class="stack"><div class="row"><h2 class="grow">${esc(pr.name)}</h2>${ps.cycle>1&&ui.confirm!=='cycle-back'?`<button class="linkbtn small" data-act="ask" data-v="cycle-back">Back to cycle ${ps.cycle-1}</button>`:''}<span class="pill">Cycle ${ps.cycle}</span></div>
+   ${ps.cycle>1&&ui.confirm==='cycle-back'?`<div class="card stack"><p>Go back to cycle ${ps.cycle-1}, week ${pr.weeks.length}? ${inCyc?`The ${inCyc} workout${inCyc===1?'':'s'} you logged in cycle ${ps.cycle} move${inCyc===1?'s':''} into cycle ${ps.cycle-1}. Nothing is deleted.`:`Nothing was logged in cycle ${ps.cycle}, so nothing else changes.`}</p><div class="row"><button class="btn-primary grow" data-act="cycle-back-yes">Go back to cycle ${ps.cycle-1}</button><button data-act="cancel">Cancel</button></div></div>`:''}
    <div class="weeks" role="group" aria-label="Week">`+pr.weeks.map((w,i)=>`<button data-act="week" data-v="${i+1}" aria-pressed="${ps.week===i+1}" aria-label="Week ${i+1}, ${esc(w.title)}"><b>${i+1}</b><span>${esc(w.title)}</span><span class="dots">${pr.days.map(d=>`<i class="${doneIn(i+1,d.id)?'on':''}"></i>`).join('')}</span></button>`).join('')+`</div>
    <p class="cue"><b>Week ${ps.week}.</b> ${esc(wk.note)}</p></section>`;
   const count=pr.days.filter(d=>doneIn(ps.week,d.id)).length;
-  h+=`<section class="stack"><div class="row"><h2 class="grow">This week</h2><span class="target">${count} / ${S.settings.split}</span></div>`;
+  h+=`<section class="stack"><div class="row"><h2 class="grow">Week ${ps.week}</h2><span class="target">${count} / ${S.settings.split}</span></div>`;
+  /* a day that is not logged yet starts a workout; a logged day opens that workout again, to carry on or to correct it */
   pr.days.forEach((d,i)=>{const dn=doneIn(ps.week,d.id), opt=d.optional&&S.settings.split<pr.days.length;
-    h+=`<button class="card day" data-act="start" data-id="${esc(d.id)}"><span class="n">${i+1}</span><span class="grow"><h3>${esc(d.title)}</h3><span class="small muted">${d.items.length} exercises · warm-up first</span></span>${dn?`<span class="pill ok">Done ${fmtDate(dn.finishedAt)}</span>`:opt?'<span class="pill">Optional</span>':'<span class="pill warn">To do</span>'}</button>`;});
+    const live=!!S.current&&S.current.pid===pr.id&&S.current.dayId===d.id&&S.current.week===ps.week&&S.current.cycle===ps.cycle, re=dn&&!live;
+    h+=`<button class="card day" data-act="${re?'edit':'start'}" data-id="${esc(re?dn.id:d.id)}"><span class="n">${i+1}</span><span class="grow"><h3>${esc(d.title)}</h3><span class="small muted">${live?(S.current.edit?'You have unsaved changes · tap to carry on':'Started · tap to carry on'):dn?'Tap to continue or edit':d.items.length+' exercises · warm-up first'}</span></span>${live?`<span class="pill warn">${S.current.edit?'Editing':'In progress'}</span>`:dn?`<span class="pill ok">Done ${fmtDate(dn.finishedAt)}</span>`:opt?'<span class="pill">Optional</span>':'<span class="pill warn">To do</span>'}</button>`;});
   if(count>=S.settings.split&&ps.week<pr.weeks.length) h+=`<div class="card hi stack"><p><b>Week ${ps.week} is done.</b> Next up: ${esc(pr.weeks[ps.week].title.toLowerCase())}.</p><button class="btn-primary" data-act="week" data-v="${ps.week+1}">Start week ${ps.week+1}</button></div>`;
   if(pr.roles){const rk=roleOf(pr), keys=Object.keys(pr.roles), picked=!!(S.settings.roles||{})[pr.id];
     const ctl=keys.length>3?`<select data-role-sel aria-label="My position" style="width:auto;min-width:170px">${keys.map(k=>`<option value="${esc(k)}" ${k===rk?'selected':''}>${esc(pr.roles[k].name)}</option>`).join('')}</select>`
@@ -1214,7 +1221,8 @@ function viewSession(){
   const cur=c.cur, pr=c.pr, day=c.day, wk=c.wk, mins=Math.max(0,Math.round((Date.now()-cur.startedAt)/6e4));
   let h=`<header class="stack"><button class="linkbtn" data-act="overview" style="align-self:flex-start">‹ Back to overview</button>
    <div class="eyebrow">Week ${cur.week} · ${esc(wk.title)}</div><h1>${esc(day.title)}</h1>
-   <div class="row small"><span class="grow"><b>${c.done} of ${c.total}</b> sets done</span><span class="muted">${mins} min in</span></div><div class="meter"><i style="width:${c.total?Math.round(100*c.done/c.total):0}%"></i></div>
+   <div class="row small"><span class="grow"><b>${c.done} of ${c.total}</b> sets done</span><span class="muted">${cur.edit?'Saved '+esc(fmtDate(cur.finishedAt)):mins+' min in'}</span></div><div class="meter"><i style="width:${c.total?Math.round(100*c.done/c.total):0}%"></i></div>
+   ${cur.edit?`<p class="cue" id="edit-note"><b>You are editing a saved workout.</b> Tick more sets to carry on, or correct any number. Nothing changes until you tap Save changes at the bottom.</p>`:''}
    <p class="cue">${esc(wk.note)}</p>
    ${hasPairs(day)?`<div class="row small"><span class="grow"><b>Supersets</b> <span class="muted">${ssOn()?'B1 then B2 back to back, then rest':'Each exercise on its own, with its own rest'}</span></span><div class="seg" style="min-width:120px"><button data-act="superset" data-v="1" aria-pressed="${ssOn()}">On</button><button data-act="superset" data-v="0" aria-pressed="${!ssOn()}">Off</button></div></div>`:''}</header>`;
   if(pr.warmup&&pr.warmup.length){
@@ -1270,10 +1278,11 @@ function viewSession(){
     }
   });
   h+=`<section class="stack"><label for="sess-note"><b>Notes</b> <span class="muted small">How it felt, any pain, what to change next time</span></label><textarea id="sess-note" class="note">${esc(cur.note||'')}</textarea></section>`;
-  h+= ui.confirm==='finish-typed' ? `<div class="card hi stack" id="finish-ask"><p><b>${ui.typedN} set${ui.typedN===1?' has':'s have'} numbers but no tick.</b> Count ${ui.typedN===1?'it':'them'} as done?</p><div class="row"><button class="btn-primary grow" data-act="finish" data-v="count">Count and finish</button><button data-act="finish" data-v="skip">Leave out</button></div><button class="linkbtn small" data-act="cancel">Back to the workout</button></div>`
-     : `<button class="btn-primary btn-wide" data-act="finish">Finish workout</button>`;
-  h+= ui.confirm==='discard' ? `<div class="card stack"><p>Throw away this session? Sets you logged today will be lost.</p><div class="row"><button class="btn-danger grow" data-act="discard-yes">Discard</button><button data-act="cancel">Keep going</button></div></div>`
-     : `<button class="btn-ghost btn-danger" data-act="ask" data-v="discard">Discard session</button>`;
+  h+= ui.confirm==='finish-typed' ? `<div class="card hi stack" id="finish-ask"><p><b>${ui.typedN} set${ui.typedN===1?' has':'s have'} numbers but no tick.</b> Count ${ui.typedN===1?'it':'them'} as done?</p><div class="row"><button class="btn-primary grow" data-act="finish" data-v="count">${cur.edit?'Count and save':'Count and finish'}</button><button data-act="finish" data-v="skip">Leave out</button></div><button class="linkbtn small" data-act="cancel">Back to the workout</button></div>`
+     : `<button class="btn-primary btn-wide" data-act="finish">${cur.edit?'Save changes':'Finish workout'}</button>`;
+  h+= ui.confirm==='discard' ? (cur.edit?`<div class="card stack"><p>Drop your changes? The saved workout stays exactly as it was.</p><div class="row"><button class="btn-danger grow" data-act="discard-yes">Drop changes</button><button data-act="cancel">Keep editing</button></div></div>`
+       :`<div class="card stack"><p>Throw away this session? Sets you logged today will be lost.</p><div class="row"><button class="btn-danger grow" data-act="discard-yes">Discard</button><button data-act="cancel">Keep going</button></div></div>`)
+     : `<button class="btn-ghost btn-danger" data-act="ask" data-v="discard">${cur.edit?'Cancel editing':'Discard session'}</button>`;
   return h;
 }
 function chartSVG(pts,label){
@@ -1341,6 +1350,7 @@ function viewProgress(){
       h+=`<div class="card stack"><button class="linkbtn" style="text-align:left;text-decoration:none;color:inherit" data-act="sess" data-id="${esc(s.id)}"><b>${esc(fmtDate(s.finishedAt))}</b> · ${esc(d?d.title:s.dayId)}<br><span class="small muted">${esc(pr?pr.name:'')} · week ${s.week} · ${mins} min · ${open?'hide':'details'}</span></button>`;
       if(open){h+='<table>'+Object.keys(s.sets).map(k=>{const a=s.sets[k].filter(x=>x.done);return a.length?`<tr><td>${esc((s.names&&s.names[k])||k)}</td><td>${a.map(x=>esc(setTxt(x,s))).join(', ')}</td></tr>`:''}).join('')+'</table>';
         if(s.note) h+=`<p class="small"><b>Notes:</b> ${esc(s.note)}</p>`;
+        if(pr&&d) h+=`<button data-act="edit" data-id="${esc(s.id)}">Continue or edit this session</button>`;
         h+= ui.confirm==='del-'+s.id?`<div class="row"><button class="btn-danger grow" data-act="del-yes" data-id="${esc(s.id)}">Delete for good</button><button data-act="cancel">Cancel</button></div>`:`<button class="btn-ghost btn-danger" data-act="ask" data-v="del-${esc(s.id)}">Delete this session</button>`;}
       h+=`</div>`;});
     h+=`</section>`;
@@ -1589,11 +1599,32 @@ const ACT={
   unit(d){ if(d.v===S.settings.unit||(d.v!=='kg'&&d.v!=='lb')) return; if(!S.settings.legacyUnit) S.settings.legacyUnit=S.settings.unit; S.settings.unit=d.v;saveSettings();render();toast('Everything now shown in '+d.v)},
   ask(d){ui.confirm=d.v;render()}, cancel(){ui.confirm=null;render()},
   'cycle-yes'(){const ps=progState(activeProgram().id);ps.cycle++;ps.week=1;ui.confirm=null;saveSettings();render()},
+  /* undo a new cycle: step the number back, land on the last week, and move what was logged under the dropped cycle with it */
+  'cycle-back-yes'(){
+    const pr=activeProgram(); if(!pr) return; const ps=progState(pr.id); ui.confirm=null; if(!(ps.cycle>1)){render();return}
+    const from=ps.cycle, to=from-1;
+    finished().forEach(s=>{ if(s.pid===pr.id&&s.cycle===from){s.cycle=to;saveSession(s)} });
+    if(S.current&&S.current.pid===pr.id&&S.current.cycle===from){S.current.cycle=to;saveCurrent(true)}
+    ps.cycle=to;ps.week=pr.weeks.length;saveSettings();render();toast('Back on cycle '+to)
+  },
+  /* open a saved workout again, to carry on where it stopped or to correct what was logged.
+     The saved copy stays as it is until "Save changes"; "Cancel editing" leaves it untouched. */
+  edit(d){
+    const s=S.sessions[d.id]; if(!s||!s.finishedAt) return;
+    const pr=allPrograms()[s.pid]; if(!pr||!pr.days.find(x=>x.id===s.dayId)){toast('That program is not on this device any more');return}
+    if(!(S.current&&S.current.edit&&S.current.id===s.id)){
+      if(S.current){ if(ui.confirm!=='switch-'+s.id||Date.now()-(ui.confirmAt||0)>5000){ui.confirm='switch-'+s.id;ui.confirmAt=Date.now();toast(S.current.edit?'You have unsaved changes to another workout. Tap again to drop them, or use Resume.':'You have an unfinished session. Tap again to discard it, or use Resume.');return} }
+      rest=null; S.current=clone(s); S.current.edit=true; if(!S.current.sets) S.current.sets={}; if(!S.current.warm) S.current.warm={};
+      ui.warmOpen=false; saveCurrent(true); alignCurrent();
+    }
+    ui.editFrom=ui.view==='progress'?'progress':'train';
+    ui.confirm=null;ui.demo=null;ui.view='session';keepAwake();render();window.scrollTo(0,0)
+  },
   start(d){
     const pr=activeProgram(), ps=progState(pr.id);
     const sameSess=!!S.current&&S.current.pid===pr.id&&S.current.dayId===d.id&&S.current.week===ps.week&&S.current.cycle===ps.cycle;
     /* replacing an open session needs a second tap within a few seconds */
-    if(S.current&&!sameSess){ if(ui.confirm!=='switch-'+d.id||Date.now()-(ui.confirmAt||0)>5000){ui.confirm='switch-'+d.id;ui.confirmAt=Date.now();toast('You have an unfinished session. Tap again to discard it, or use Resume.');return} }
+    if(S.current&&!sameSess){ if(ui.confirm!=='switch-'+d.id||Date.now()-(ui.confirmAt||0)>5000){ui.confirm='switch-'+d.id;ui.confirmAt=Date.now();toast(S.current.edit?'You have unsaved changes to a saved workout. Tap again to drop them, or use Resume.':'You have an unfinished session. Tap again to discard it, or use Resume.');return} }
     if(!sameSess){ rest=null;
       const day=pr.days.find(x=>x.id===d.id), names={}; day.items.forEach(it=>names[exKey(it.name)]=it.name);
       S.current={id:'s'+Date.now().toString(36),pid:pr.id,dayId:d.id,week:ps.week,cycle:ps.cycle,startedAt:Date.now(),unit:S.settings.unit,sets:{},warm:{},names,note:''};
@@ -1651,12 +1682,15 @@ const ACT={
     const any=Object.values(cur.sets).some(a=>a.some(x=>x.done));
     if(!any){ui.confirm=null;toast('Log at least one set first');render();return}
     ui.confirm=null; alignCurrent();
-    const prs=[]; Object.keys(cur.sets).forEach(k=>{const tw=topWeight(cur.sets[k],cur); if(tw==null) return; let best=null; finished().forEach(s=>{const w=s.sets[k]&&topWeight(s.sets[k],s); if(w!=null&&(best==null||w>best))best=w}); if(best!=null&&tw>best) prs.push({k,w:tw,was:best,u:S.settings.unit})});
-    cur.prs=prs; cur.finishedAt=Date.now(); S.sessions[cur.id]=cur; S.current=null; rest=null;
+    const prs=[]; Object.keys(cur.sets).forEach(k=>{const tw=topWeight(cur.sets[k],cur); if(tw==null) return; let best=null; prior().forEach(s=>{const w=s.sets[k]&&topWeight(s.sets[k],s); if(w!=null&&(best==null||w>best))best=w}); if(best!=null&&tw>best) prs.push({k,w:tw,was:best,u:S.settings.unit})});
+    /* an edited workout keeps the day it was first saved on, so history, week dots and the team board do not move */
+    const ed=!!cur.edit; if(ed){delete cur.edit;cur.editedAt=Date.now(); if(!cur.finishedAt) cur.finishedAt=Date.now()} else cur.finishedAt=Date.now();
+    cur.prs=prs; S.sessions[cur.id]=cur; S.current=null; rest=null;
     saveSession(cur); saveCurrent(true); pushBoard(); try{wake&&wake.release()}catch(e){}
+    if(ed){ui.view=ui.editFrom||'train';ui.just=null;render();window.scrollTo(0,0);toast('Changes saved');return}
     ui.view='progress';ui.just=cur.id;ui.openSess=null;render();window.scrollTo(0,0);toast('Workout saved')
   },
-  'discard-yes'(){S.current=null;rest=null;ui.confirm=null;ui.view='train';saveCurrent(true);try{wake&&wake.release()}catch(e){};render()},
+  'discard-yes'(){const ed=!!(S.current&&S.current.edit);S.current=null;rest=null;ui.confirm=null;ui.view=ed?(ui.editFrom||'train'):'train';saveCurrent(true);try{wake&&wake.release()}catch(e){};render()},
   sess(d){ui.openSess=ui.openSess===d.id?null:d.id;ui.confirm=null;render()},
   'del-yes'(d){delete S.sessions[d.id];(S.settings.deleted=S.settings.deleted||[]).push(d.id);ui.confirm=null;saveSettings();queue('sessions/'+d.id,DEL);render()},
   mtype(d){ui.mType=d.v;render()},
